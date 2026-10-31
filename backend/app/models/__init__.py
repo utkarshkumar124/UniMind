@@ -9,6 +9,9 @@ from backend.app.models.schemas import (
     DocumentListItem,
     DocumentDetailResponse,
     DocumentDeleteResponse,
+    BlockReference,
+    DocumentChunk,
+    DocumentProcessResponse,
 )
 
 __all__ = [
@@ -20,4 +23,7 @@ __all__ = [
     "DocumentListItem",
     "DocumentDetailResponse",
     "DocumentDeleteResponse",
+    "BlockReference",
+    "DocumentChunk",
+    "DocumentProcessResponse",
 ]

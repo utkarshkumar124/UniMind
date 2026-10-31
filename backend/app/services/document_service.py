@@ -43,9 +43,10 @@ class DocumentService:
         self._init_storage()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Create a SQLite connection with row dictionary access and busy timeout."""
+        """Create a SQLite connection with row dictionary access, busy timeout, and foreign keys enabled."""
         conn = sqlite3.connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
         return conn
 
     def _init_storage(self) -> None:
@@ -73,14 +74,47 @@ class DocumentService:
                     total_characters INTEGER NOT NULL DEFAULT 0,
                     raw_file_path TEXT NOT NULL,
                     processed_file_path TEXT NOT NULL,
+                    staged_tx_id TEXT,
+                    active_tx_id TEXT,
+                    total_chunks INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     error_message TEXT
                 );
                 """
             )
+            # Safe schema migration for pre-existing documents table
+            existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+            if "staged_tx_id" not in existing_cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN staged_tx_id TEXT;")
+            if "active_tx_id" not in existing_cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN active_tx_id TEXT;")
+            if "total_chunks" not in existing_cols:
+                conn.execute("ALTER TABLE documents ADD COLUMN total_chunks INTEGER NOT NULL DEFAULT 0;")
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_file_hash ON documents(file_hash);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at);")
+
+            # Phase 3 chunks table with ON DELETE CASCADE
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chunks (
+                    chunk_id TEXT PRIMARY KEY,
+                    doc_id TEXT NOT NULL,
+                    page_start INTEGER NOT NULL,
+                    page_end INTEGER NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    token_count INTEGER NOT NULL,
+                    char_count INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    embedding_offset INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_page_start ON chunks(page_start);")
             conn.commit()
 
     def get_document_by_hash(self, file_hash: str) -> Optional[Dict[str, Any]]:
@@ -321,6 +355,7 @@ class DocumentService:
             "is_empty": bool(record.get("is_empty", 0)),
             "total_words": record.get("total_words", 0),
             "total_characters": record.get("total_characters", 0),
+            "total_chunks": record.get("total_chunks", 0),
             "uploaded_at": record.get("created_at"),
             "updated_at": record.get("updated_at"),
             "error_message": record.get("error_message"),

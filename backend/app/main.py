@@ -10,12 +10,14 @@ from backend.app.core.config import settings
 from backend.app.models.schemas import RootResponse, HealthResponse
 from backend.app.routes.api import api_router
 from backend.app.routes.health import health_check
+from backend.app.services.embedding_service import embedding_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for startup and shutdown procedures."""
-    # Startup tasks (e.g. initialize indices, connections)
+    # Execute crash-recovery scan before accepting incoming requests
+    embedding_service.startup_recovery_scan()
     yield
     # Shutdown tasks (e.g. release resources)
 

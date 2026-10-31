@@ -84,6 +84,7 @@ class DocumentListItem(BaseModel):
     is_empty: bool = Field(default=False, description="Empty document flag")
     total_words: int = Field(default=0, description="Total word count")
     total_characters: int = Field(default=0, description="Total character count")
+    total_chunks: int = Field(default=0, description="Total indexed chunks")
     uploaded_at: str = Field(..., description="ISO 8601 upload timestamp")
     updated_at: Optional[str] = Field(default=None, description="ISO 8601 last update timestamp")
 
@@ -92,6 +93,48 @@ class DocumentDetailResponse(DocumentListItem):
     """Full document record including extracted page content."""
 
     pages: List[PageInfo] = Field(default_factory=list, description="Extracted pages")
+
+
+class BlockReference(BaseModel):
+    """Reference to a specific structural block within a document page."""
+
+    page_number: int = Field(..., description="1-indexed page number containing block")
+    block_index: int = Field(..., description="Block index within page")
+    bbox: List[float] = Field(..., description="Bounding box coordinates [x0, y0, x1, y1]")
+
+
+class DocumentChunk(BaseModel):
+    """Granular semantic text chunk with exact provenance and vector offset."""
+
+    chunk_id: str = Field(..., description="Deterministic unique identifier {doc_id}#p{page}#c{idx}")
+    doc_id: str = Field(..., description="Parent document UUID")
+    filename: str = Field(..., description="Source document filename")
+    department: str = Field(..., description="University department")
+    category: str = Field(..., description="Document category")
+    page_start: int = Field(..., description="1-indexed starting page number")
+    page_end: int = Field(..., description="1-indexed ending page number")
+    chunk_index: int = Field(..., description="0-indexed position within document")
+    blocks: List[BlockReference] = Field(default_factory=list, description="Structural blocks spanned by this chunk")
+    text: str = Field(..., description="Normalized chunk text")
+    token_count: int = Field(..., description="Token count using model tokenizer")
+    char_count: int = Field(..., description="Character count")
+    file_hash_sha256: str = Field(..., description="SHA-256 hash of original document binary")
+    embedding_offset: int = Field(..., description="Row index in dense vector embeddings matrix")
+    created_at: str = Field(..., description="ISO 8601 creation timestamp")
+
+
+class DocumentProcessResponse(BaseModel):
+    """Response returned upon successful document chunking and embedding generation."""
+
+    doc_id: str = Field(..., description="Processed document UUID")
+    status: str = Field(..., description="Processing status (e.g. INDEXED)")
+    total_chunks: int = Field(..., description="Total semantic chunks generated and indexed")
+    model_name: str = Field(..., description="Embedding model used")
+    vector_dimension: int = Field(..., description="Dimension of generated embedding vectors")
+    embedding_file: str = Field(..., description="Filename of stored dense vectors (.npy)")
+    chunks_file: str = Field(..., description="Filename of stored chunk catalog (.json)")
+    processing_time_seconds: float = Field(..., description="Execution time in seconds")
+    processed_at: str = Field(..., description="ISO 8601 completion timestamp")
 
 
 class DocumentDeleteResponse(BaseModel):

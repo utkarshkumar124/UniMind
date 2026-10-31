@@ -7,9 +7,16 @@ from backend.app.models.schemas import (
     DocumentListItem,
     DocumentDetailResponse,
     DocumentDeleteResponse,
+    DocumentProcessResponse,
 )
 from backend.app.utils.file_validator import read_and_validate_upload
 from backend.app.services.document_service import document_service
+from backend.app.services.embedding_service import (
+    embedding_service,
+    DocumentNotFoundError,
+    ConcurrencyConflictError,
+    InvalidDocumentStateError,
+)
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -79,14 +86,58 @@ async def get_document(doc_id: str) -> DocumentDetailResponse:
     return DocumentDetailResponse(**doc)
 
 
+@router.post(
+    "/{doc_id}/process",
+    response_model=DocumentProcessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Process Document: Chunk Text and Generate Dense Embeddings",
+)
+async def process_document(
+    doc_id: str,
+    force: bool = False,
+) -> DocumentProcessResponse:
+    """Trigger semantic chunking and dense vector embedding generation for an ingested document.
+
+    Performs:
+    - Atomic SQLite CAS concurrency locking against duplicate requests.
+    - Hierarchical sliding window token chunking with page and block provenance.
+    - Dense embedding generation using multilingual-e5-small with 'passage: ' prefix.
+    - Per-file transaction manifest staging and backup rotation.
+    - Atomic commit to SQLite chunks registry.
+    """
+    try:
+        response = embedding_service.process_document(doc_id=doc_id, force=force)
+        return response
+    except DocumentNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except ConcurrencyConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except InvalidDocumentStateError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Document embedding processing failed: {str(e)}",
+        )
+
+
 @router.delete(
     "/{doc_id}",
     response_model=DocumentDeleteResponse,
     summary="Delete Document",
 )
 async def delete_document(doc_id: str) -> DocumentDeleteResponse:
-    """Delete a document, its raw PDF file, processed JSON structure, and catalog entry."""
-    success = document_service.delete_document(doc_id)
+    """Safely delete a document, raw PDF, processed JSON, chunk index, vector embeddings, and catalog entry."""
+    success = embedding_service.delete_document_recoverable(doc_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -95,6 +146,6 @@ async def delete_document(doc_id: str) -> DocumentDeleteResponse:
     return DocumentDeleteResponse(
         doc_id=doc_id,
         deleted=True,
-        message="Document, raw file, processed data, and registry record deleted successfully.",
+        message="Document, raw file, processed data, chunks, and embeddings deleted successfully.",
     )
 

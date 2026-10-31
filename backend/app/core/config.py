@@ -67,9 +67,13 @@ class Settings(BaseSettings):
     ALLOWED_UPLOAD_EXTENSIONS: List[str] = [".pdf"]
     ALLOWED_UPLOAD_MIME_TYPES: List[str] = ["application/pdf"]
 
-    # Model Settings (Placeholders for upcoming phases)
-    EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Model & Embedding Settings
+    EMBEDDING_MODEL_NAME: str = "intfloat/multilingual-e5-small"
     EMBEDDING_DIMENSION: int = 384
+    CHUNK_SIZE_TOKENS: int = 380
+    CHUNK_OVERLAP_TOKENS: int = 40
+    EMBEDDING_BATCH_SIZE: int = 32
+    MODEL_CACHE_DIR: Union[str, None] = None
     GEMINI_API_KEY: SecretStr = SecretStr("")
     GEMINI_MODEL: str = "gemini-1.5-flash"
 
