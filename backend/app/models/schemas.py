@@ -1,0 +1,102 @@
+"""Pydantic schemas and data transfer models for UniMind API."""
+
+from typing import List, Optional
+from pydantic import BaseModel, Field
+
+
+class HealthResponse(BaseModel):
+    """Schema for API health status check response."""
+
+    status: str = Field(default="healthy", description="Current service health state")
+    service: str = Field(..., description="Service name")
+    version: str = Field(..., description="Application version")
+    environment: str = Field(..., description="Deployment environment")
+
+
+class RootResponse(BaseModel):
+    """Schema for root endpoint response."""
+
+    service: str = Field(..., description="Service name")
+    version: str = Field(..., description="Application version")
+    status: str = Field(default="online", description="Service status")
+    docs_url: str = Field(..., description="Interactive API documentation URL")
+    health_url: str = Field(..., description="Service health endpoint URL")
+    api_v1_url: str = Field(..., description="API v1 root route")
+
+
+class StructuralBlock(BaseModel):
+    """Extracted structural text block with coordinates."""
+
+    block_number: int = Field(..., description="Block index within page")
+    bbox: List[float] = Field(..., description="Bounding box coordinates [x0, y0, x1, y1]")
+    text: str = Field(..., description="Cleaned block text")
+
+
+class PageInfo(BaseModel):
+    """Page-level extraction details and quality flags."""
+
+    page_number: int = Field(..., description="1-indexed page number")
+    text: Optional[str] = Field(default=None, description="Cleaned extracted page text")
+    snippet: str = Field(default="", description="Short preview snippet")
+    char_count: int = Field(default=0, description="Character count on page")
+    word_count: int = Field(default=0, description="Word count on page")
+    is_empty: bool = Field(default=False, description="Whether the page contains zero text")
+    is_scanned: bool = Field(default=False, description="Whether the page contains images without extractable text")
+    needs_ocr_review: bool = Field(default=False, description="Flag for scanned/image content needing OCR review")
+    image_count: int = Field(default=0, description="Number of embedded raster images on page")
+    blocks: Optional[List[StructuralBlock]] = Field(default=None, description="Structural text blocks")
+
+
+class DocumentUploadResponse(BaseModel):
+    """Response returned upon successful document upload and parsing."""
+
+    doc_id: str = Field(..., description="Unique document UUID")
+    filename: str = Field(..., description="Sanitized original document filename")
+    file_hash_sha256: str = Field(..., description="SHA-256 hash of document binary")
+    file_size_bytes: int = Field(..., description="Document size in bytes")
+    total_pages: int = Field(..., description="Total pages in document")
+    department: str = Field(default="General", description="Associated university department")
+    category: str = Field(default="Policy", description="Document category")
+    status: str = Field(..., description="Processing status: PROCESSING, PROCESSED, FAILED")
+    has_scanned_pages: bool = Field(default=False, description="Whether any page is scanned/image-based")
+    needs_ocr_review: bool = Field(default=False, description="Flag indicating OCR review is recommended")
+    is_empty: bool = Field(default=False, description="Whether the entire document contains zero text")
+    total_words: int = Field(default=0, description="Total word count in document")
+    total_characters: int = Field(default=0, description="Total character count in document")
+    is_duplicate: bool = Field(default=False, description="Whether this upload was identified as a duplicate")
+    uploaded_at: str = Field(..., description="ISO 8601 upload timestamp")
+    pages: List[PageInfo] = Field(default_factory=list, description="Extracted pages and metadata")
+
+
+class DocumentListItem(BaseModel):
+    """Summary item in document catalog list."""
+
+    doc_id: str = Field(..., description="Unique document UUID")
+    filename: str = Field(..., description="Sanitized document filename")
+    file_hash_sha256: str = Field(..., description="SHA-256 hash of document binary")
+    file_size_bytes: int = Field(..., description="Document size in bytes")
+    total_pages: int = Field(..., description="Total pages")
+    department: str = Field(..., description="Associated university department")
+    category: str = Field(..., description="Document category")
+    status: str = Field(..., description="Document processing status")
+    has_scanned_pages: bool = Field(default=False, description="Scanned pages flag")
+    needs_ocr_review: bool = Field(default=False, description="OCR review flag")
+    is_empty: bool = Field(default=False, description="Empty document flag")
+    total_words: int = Field(default=0, description="Total word count")
+    total_characters: int = Field(default=0, description="Total character count")
+    uploaded_at: str = Field(..., description="ISO 8601 upload timestamp")
+    updated_at: Optional[str] = Field(default=None, description="ISO 8601 last update timestamp")
+
+
+class DocumentDetailResponse(DocumentListItem):
+    """Full document record including extracted page content."""
+
+    pages: List[PageInfo] = Field(default_factory=list, description="Extracted pages")
+
+
+class DocumentDeleteResponse(BaseModel):
+    """Response returned upon document deletion."""
+
+    doc_id: str = Field(..., description="UUID of deleted document")
+    deleted: bool = Field(default=True, description="Deletion confirmation")
+    message: str = Field(..., description="Status message")
