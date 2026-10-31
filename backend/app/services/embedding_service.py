@@ -97,56 +97,71 @@ class EmbeddingService:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         with self._get_connection() as conn:
-            cursor = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,))
-            record = cursor.fetchone()
-            if not record:
-                raise DocumentNotFoundError(f"Document with doc_id '{doc_id}' not found.")
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                cursor = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,))
+                record = cursor.fetchone()
+                if not record:
+                    conn.execute("ROLLBACK;")
+                    raise DocumentNotFoundError(f"Document with doc_id '{doc_id}' not found.")
 
-            doc_dict = dict(record)
-            current_status = doc_dict["status"]
+                doc_dict = dict(record)
+                current_status = doc_dict["status"]
 
-            if current_status == "PROCESSING_EMBEDDINGS":
-                staged_tx = doc_dict.get("staged_tx_id", "unknown")
-                raise ConcurrencyConflictError(
-                    f"Document '{doc_id}' is currently being processed by transaction '{staged_tx}'."
+                if current_status == "PROCESSING_EMBEDDINGS":
+                    conn.execute("ROLLBACK;")
+                    staged_tx = doc_dict.get("staged_tx_id", "unknown")
+                    raise ConcurrencyConflictError(
+                        f"Document '{doc_id}' is currently being processed by transaction '{staged_tx}'."
+                    )
+
+                if current_status == "DELETING":
+                    conn.execute("ROLLBACK;")
+                    raise ConcurrencyConflictError(f"Document '{doc_id}' is currently being deleted.")
+
+                if doc_dict.get("is_empty", 0) == 1:
+                    conn.execute("ROLLBACK;")
+                    raise InvalidDocumentStateError(f"Document '{doc_id}' is empty and cannot be embedded.")
+
+                # Allowed source statuses for embedding
+                allowed_statuses = ["PROCESSED", "FAILED"]
+                if force:
+                    allowed_statuses.append("INDEXED")
+
+                if current_status not in allowed_statuses:
+                    conn.execute("ROLLBACK;")
+                    raise ConcurrencyConflictError(
+                        f"Document '{doc_id}' is in status '{current_status}'. "
+                        f"Allowed statuses for processing are: {allowed_statuses}."
+                    )
+
+                # Atomic CAS update within BEGIN IMMEDIATE
+                placeholders = ",".join("?" for _ in allowed_statuses)
+                params = ["PROCESSING_EMBEDDINGS", tx_id, now_iso, doc_id] + allowed_statuses
+                update_cursor = conn.execute(
+                    f"""
+                    UPDATE documents
+                    SET status = ?, staged_tx_id = ?, updated_at = ?
+                    WHERE doc_id = ? AND status IN ({placeholders});
+                    """,
+                    params,
                 )
 
-            if current_status == "DELETING":
-                raise ConcurrencyConflictError(f"Document '{doc_id}' is currently being deleted.")
+                if update_cursor.rowcount == 0:
+                    conn.execute("ROLLBACK;")
+                    raise ConcurrencyConflictError(
+                        f"Failed to acquire processing lock for document '{doc_id}' due to concurrent state change."
+                    )
 
-            if doc_dict.get("is_empty", 0) == 1:
-                raise InvalidDocumentStateError(f"Document '{doc_id}' is empty and cannot be embedded.")
-
-            # Allowed source statuses for embedding
-            allowed_statuses = ["PROCESSED", "FAILED"]
-            if force:
-                allowed_statuses.append("INDEXED")
-
-            if current_status not in allowed_statuses:
-                raise ConcurrencyConflictError(
-                    f"Document '{doc_id}' is in status '{current_status}'. "
-                    f"Allowed statuses for processing are: {allowed_statuses}."
-                )
-
-            # Atomic CAS update
-            placeholders = ",".join("?" for _ in allowed_statuses)
-            params = ["PROCESSING_EMBEDDINGS", tx_id, now_iso, doc_id] + allowed_statuses
-            update_cursor = conn.execute(
-                f"""
-                UPDATE documents
-                SET status = ?, staged_tx_id = ?, updated_at = ?
-                WHERE doc_id = ? AND status IN ({placeholders});
-                """,
-                params,
-            )
-            conn.commit()
-
-            if update_cursor.rowcount == 0:
-                raise ConcurrencyConflictError(
-                    f"Failed to acquire processing lock for document '{doc_id}' due to concurrent state change."
-                )
-
-            return doc_dict
+                conn.execute("COMMIT;")
+                return doc_dict
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK;")
+                except Exception:
+                    pass
+                raise
 
     # -------------------------------------------------------------------------
     # Core Processing Pipeline
@@ -200,6 +215,7 @@ class EmbeddingService:
                     "backup_path": backup_chunks_path,
                     "expected_sha256": None,
                     "size_bytes": 0,
+                    "rotated": False,
                 },
                 "embeddings": {
                     "active_path": active_emb_path,
@@ -207,6 +223,7 @@ class EmbeddingService:
                     "backup_path": backup_emb_path,
                     "expected_sha256": None,
                     "size_bytes": 0,
+                    "rotated": False,
                 },
             },
         }
@@ -245,19 +262,24 @@ class EmbeddingService:
             for idx, c in enumerate(chunks):
                 c.embedding_offset = idx
 
-            # 6. Stage files to disk
+            # 6. Stage files to disk with flush and fsync
             # 6a. Staged chunks JSON
             chunks_payload = [c.model_dump() for c in chunks]
             with open(staged_chunks_path, "w", encoding="utf-8") as f:
                 json.dump(chunks_payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
 
             chunks_sha = compute_file_sha256(staged_chunks_path)
             manifest["files"]["chunks"]["expected_sha256"] = chunks_sha
             manifest["files"]["chunks"]["size_bytes"] = os.path.getsize(staged_chunks_path)
 
-            # 6b. Staged embeddings NumPy (use open binary file to prevent numpy from appending .npy)
+            # 6b. Staged embeddings NumPy
             with open(staged_emb_path, "wb") as f:
                 np.save(f, embeddings)
+                f.flush()
+                os.fsync(f.fileno())
+
             emb_sha = compute_file_sha256(staged_emb_path)
             manifest["files"]["embeddings"]["expected_sha256"] = emb_sha
             manifest["files"]["embeddings"]["size_bytes"] = os.path.getsize(staged_emb_path)
@@ -271,68 +293,79 @@ class EmbeddingService:
             if chunks_existed and os.path.exists(active_chunks_path):
                 os.replace(active_chunks_path, backup_chunks_path)
             os.replace(staged_chunks_path, active_chunks_path)
+            manifest["files"]["chunks"]["rotated"] = True
+            self._write_manifest(manifest_path, manifest)
 
             # 7b. Embeddings rotation
             if emb_existed and os.path.exists(active_emb_path):
                 os.replace(active_emb_path, backup_emb_path)
             os.replace(staged_emb_path, active_emb_path)
-
-            # Update manifest: Entering DB_COMMITTING stage
-            manifest["stage"] = "DB_COMMITTING"
+            manifest["files"]["embeddings"]["rotated"] = True
+            manifest["stage"] = "ROTATED"
             self._write_manifest(manifest_path, manifest)
 
-            # 8. Atomic SQLite commit
+            # 8. Atomic SQLite commit with BEGIN IMMEDIATE
             now_iso = datetime.now(timezone.utc).isoformat()
             with self._get_connection() as conn:
-                # First delete any existing chunks for this document
-                conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE;")
+                try:
+                    # First delete any existing chunks for this document
+                    conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
 
-                # Insert newly generated chunks
-                chunk_rows = [
-                    (
-                        c.chunk_id,
-                        c.doc_id,
-                        c.page_start,
-                        c.page_end,
-                        c.chunk_index,
-                        c.token_count,
-                        c.char_count,
-                        c.text,
-                        c.embedding_offset,
-                        c.created_at,
-                    )
-                    for c in chunks
-                ]
-                conn.executemany(
-                    """
-                    INSERT INTO chunks (
-                        chunk_id, doc_id, page_start, page_end, chunk_index,
-                        token_count, char_count, text, embedding_offset, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    chunk_rows,
-                )
-
-                # Update document status and set active_tx_id
-                update_cursor = conn.execute(
-                    """
-                    UPDATE documents SET
-                        status = 'INDEXED',
-                        active_tx_id = ?,
-                        staged_tx_id = NULL,
-                        total_chunks = ?,
-                        updated_at = ?
-                    WHERE doc_id = ? AND staged_tx_id = ?;
-                    """,
-                    (tx_id, len(chunks), now_iso, doc_id, tx_id),
-                )
-
-                if update_cursor.rowcount == 0:
-                    raise ConcurrencyConflictError(
-                        f"Database commit failed: lock for transaction '{tx_id}' was superseded."
+                    # Insert newly generated chunks
+                    chunk_rows = [
+                        (
+                            c.chunk_id,
+                            c.doc_id,
+                            c.page_start,
+                            c.page_end,
+                            c.chunk_index,
+                            c.token_count,
+                            c.char_count,
+                            c.text,
+                            c.embedding_offset,
+                            c.created_at,
+                        )
+                        for c in chunks
+                    ]
+                    conn.executemany(
+                        """
+                        INSERT INTO chunks (
+                            chunk_id, doc_id, page_start, page_end, chunk_index,
+                            token_count, char_count, text, embedding_offset, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        chunk_rows,
                     )
 
-                conn.commit()
+                    # Update document status and set active_tx_id
+                    update_cursor = conn.execute(
+                        """
+                        UPDATE documents SET
+                            status = 'INDEXED',
+                            active_tx_id = ?,
+                            staged_tx_id = NULL,
+                            total_chunks = ?,
+                            updated_at = ?
+                        WHERE doc_id = ? AND staged_tx_id = ?;
+                        """,
+                        (tx_id, len(chunks), now_iso, doc_id, tx_id),
+                    )
+
+                    if update_cursor.rowcount == 0:
+                        conn.execute("ROLLBACK;")
+                        raise ConcurrencyConflictError(
+                            f"Database commit failed: lock for transaction '{tx_id}' was superseded."
+                        )
+
+                    conn.execute("COMMIT;")
+                except Exception:
+                    try:
+                        conn.execute("ROLLBACK;")
+                    except Exception:
+                        pass
+                    raise
 
             # Update manifest: COMMITTED
             manifest["stage"] = "COMMITTED"
@@ -380,31 +413,55 @@ class EmbeddingService:
         manifest_path: str,
         error_message: str,
     ) -> None:
-        """Rollback disk files and revert SQLite document status."""
+        """Rollback disk files and revert SQLite document status using manifest and verified file inspection."""
         chunks_info = manifest["files"]["chunks"]
         emb_info = manifest["files"]["embeddings"]
         active_pre = manifest.get("active_files_pre_existing", {})
 
-        # Clean staged files
-        self._safe_remove(chunks_info["staged_path"])
-        self._safe_remove(emb_info["staged_path"])
+        # Clean staged files unconditionally
+        self._safe_remove(chunks_info.get("staged_path"))
+        self._safe_remove(emb_info.get("staged_path"))
 
-        # If backups exist, restore them to active paths
+        # 1. Rollback Chunks File
         if os.path.exists(chunks_info["backup_path"]):
             os.replace(chunks_info["backup_path"], chunks_info["active_path"])
         elif not active_pre.get("chunks_file", False):
-            self._safe_remove(chunks_info["active_path"])
+            # No pre-existing file; if active was created from this tx, remove it
+            if os.path.exists(chunks_info["active_path"]):
+                active_sha = compute_file_sha256(chunks_info["active_path"])
+                if active_sha == chunks_info.get("expected_sha256"):
+                    self._safe_remove(chunks_info["active_path"])
+        else:
+            # Pre-existing file existed, backup missing: check if active is the new file
+            if os.path.exists(chunks_info["active_path"]):
+                active_sha = compute_file_sha256(chunks_info["active_path"])
+                if active_sha == chunks_info.get("expected_sha256"):
+                    # New file in active position, but old backup missing -> data corrupted!
+                    self._quarantine_transaction(doc_id=doc_id, tx_id=tx_id, manifest_path=manifest_path)
+                    return
 
+        # 2. Rollback Embeddings File
         if os.path.exists(emb_info["backup_path"]):
             os.replace(emb_info["backup_path"], emb_info["active_path"])
         elif not active_pre.get("embeddings_file", False):
-            self._safe_remove(emb_info["active_path"])
+            if os.path.exists(emb_info["active_path"]):
+                active_sha = compute_file_sha256(emb_info["active_path"])
+                if active_sha == emb_info.get("expected_sha256"):
+                    self._safe_remove(emb_info["active_path"])
+        else:
+            if os.path.exists(emb_info["active_path"]):
+                active_sha = compute_file_sha256(emb_info["active_path"])
+                if active_sha == emb_info.get("expected_sha256"):
+                    self._quarantine_transaction(doc_id=doc_id, tx_id=tx_id, manifest_path=manifest_path)
+                    return
 
-        # Revert SQLite document status
+        # Revert SQLite document status safely
         revert_status = "PROCESSED" if (active_pre.get("chunks_file") and active_pre.get("embeddings_file")) else "FAILED"
         now_iso = datetime.now(timezone.utc).isoformat()
         try:
             with self._get_connection() as conn:
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE;")
                 conn.execute(
                     """
                     UPDATE documents SET
@@ -416,18 +473,20 @@ class EmbeddingService:
                     """,
                     (revert_status, error_message, now_iso, doc_id, tx_id),
                 )
-                conn.commit()
+                conn.execute("COMMIT;")
         except Exception:
             pass
 
-        # Remove manifest after rollback
+        # Remove manifest after successful rollback
         self._safe_remove(manifest_path)
 
     def _write_manifest(self, filepath: str, data: Dict[str, Any]) -> None:
-        """Atomically persist transaction manifest."""
+        """Atomically persist transaction manifest with flush and fsync."""
         temp_path = f"{filepath}.tmp_{uuid.uuid4().hex[:8]}"
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(temp_path, filepath)
 
     def _safe_remove(self, filepath: Optional[str]) -> None:
@@ -446,9 +505,9 @@ class EmbeddingService:
         """Scan data/processed for interrupted transaction manifests and resolve crashes.
 
         Handles Crash Points 1 through 8:
-        - Committed: ensure active files are finalized, delete backups and manifest.
+        - Committed: ensure active files are finalized, verify checksums, delete backups and manifest.
         - Uncommitted: restore backups if active was disturbed, purge staged, reset DB state.
-        - Inconsistent: quarantine files to prevent corruption.
+        - Inconsistent: quarantine files to prevent silent data loss.
 
         Returns:
             Dictionary with counts of resolved, rolled_back, and quarantined transactions.
@@ -495,11 +554,10 @@ class EmbeddingService:
 
             # Case A: Database is committed
             if db_committed or is_db_indexed:
-                # Ensure active files exist and are finalized
                 chunks_info = manifest["files"]["chunks"]
                 emb_info = manifest["files"]["embeddings"]
 
-                # If active chunks missing but backup or staged exists, restore
+                # If active files are missing, restore from staged or backup
                 if not os.path.exists(chunks_info["active_path"]):
                     if os.path.exists(chunks_info["staged_path"]):
                         os.replace(chunks_info["staged_path"], chunks_info["active_path"])
@@ -512,24 +570,74 @@ class EmbeddingService:
                     elif os.path.exists(emb_info["backup_path"]):
                         os.replace(emb_info["backup_path"], emb_info["active_path"])
 
-                # Remove backups and staged
-                self._safe_remove(chunks_info["backup_path"])
-                self._safe_remove(chunks_info["staged_path"])
-                self._safe_remove(emb_info["backup_path"])
-                self._safe_remove(emb_info["staged_path"])
-                self._safe_remove(m_path)
-                results["resolved"] += 1
+                # Verify checksums of active files against manifest expected_sha256
+                chunks_ok = (
+                    os.path.exists(chunks_info["active_path"])
+                    and (
+                        chunks_info.get("expected_sha256") is None
+                        or compute_file_sha256(chunks_info["active_path"]) == chunks_info["expected_sha256"]
+                    )
+                )
+                emb_ok = (
+                    os.path.exists(emb_info["active_path"])
+                    and (
+                        emb_info.get("expected_sha256") is None
+                        or compute_file_sha256(emb_info["active_path"]) == emb_info["expected_sha256"]
+                    )
+                )
+
+                if chunks_ok and emb_ok:
+                    self._safe_remove(chunks_info.get("backup_path"))
+                    self._safe_remove(chunks_info.get("staged_path"))
+                    self._safe_remove(emb_info.get("backup_path"))
+                    self._safe_remove(emb_info.get("staged_path"))
+                    self._safe_remove(m_path)
+                    results["resolved"] += 1
+                else:
+                    self._quarantine_transaction(doc_id=doc_id, tx_id=tx_id, manifest_path=m_path)
+                    results["quarantined"] += 1
 
             # Case B: Uncommitted -> Rollback
             else:
-                self._rollback_transaction(
-                    doc_id=doc_id,
-                    tx_id=tx_id,
-                    manifest=manifest,
-                    manifest_path=m_path,
-                    error_message=f"Interrupted transaction {tx_id} recovered during startup.",
+                chunks_info = manifest["files"]["chunks"]
+                emb_info = manifest["files"]["embeddings"]
+                active_pre = manifest.get("active_files_pre_existing", {})
+
+                # Check if backup was lost after rotation
+                chunks_rotated = chunks_info.get("rotated", False) or (
+                    os.path.exists(chunks_info["active_path"])
+                    and chunks_info.get("expected_sha256") is not None
+                    and compute_file_sha256(chunks_info["active_path"]) == chunks_info["expected_sha256"]
                 )
-                results["rolled_back"] += 1
+                emb_rotated = emb_info.get("rotated", False) or (
+                    os.path.exists(emb_info["active_path"])
+                    and emb_info.get("expected_sha256") is not None
+                    and compute_file_sha256(emb_info["active_path"]) == emb_info["expected_sha256"]
+                )
+
+                chunks_corrupted = (
+                    active_pre.get("chunks_file", False)
+                    and chunks_rotated
+                    and not os.path.exists(chunks_info["backup_path"])
+                )
+                emb_corrupted = (
+                    active_pre.get("embeddings_file", False)
+                    and emb_rotated
+                    and not os.path.exists(emb_info["backup_path"])
+                )
+
+                if chunks_corrupted or emb_corrupted:
+                    self._quarantine_transaction(doc_id=doc_id, tx_id=tx_id, manifest_path=m_path)
+                    results["quarantined"] += 1
+                else:
+                    self._rollback_transaction(
+                        doc_id=doc_id,
+                        tx_id=tx_id,
+                        manifest=manifest,
+                        manifest_path=m_path,
+                        error_message=f"Interrupted transaction {tx_id} recovered during startup.",
+                    )
+                    results["rolled_back"] += 1
 
         # Also scan and resolve any lingering documents with 'DELETING' status
         self._recover_stuck_deletions()
@@ -555,6 +663,45 @@ class EmbeddingService:
         except OSError:
             pass
 
+    def _quarantine_transaction(self, doc_id: str, tx_id: str, manifest_path: Optional[str] = None) -> None:
+        """Safely quarantine all transaction artifacts into a dedicated folder without data destruction."""
+        quarantine_dir = os.path.join(self.processed_dir, f"{doc_id}.quarantine_{tx_id}")
+        os.makedirs(quarantine_dir, exist_ok=True)
+        if os.path.exists(self.processed_dir):
+            for fname in os.listdir(self.processed_dir):
+                if tx_id in fname:
+                    src = os.path.join(self.processed_dir, fname)
+                    dst = os.path.join(quarantine_dir, fname)
+                    try:
+                        os.replace(src, dst)
+                    except OSError:
+                        pass
+        if manifest_path and os.path.exists(manifest_path):
+            dst = os.path.join(quarantine_dir, os.path.basename(manifest_path))
+            try:
+                os.replace(manifest_path, dst)
+            except OSError:
+                pass
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            with self._get_connection() as conn:
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE;")
+                conn.execute(
+                    """
+                    UPDATE documents SET
+                        status = 'MANUAL_RECOVERY_REQUIRED',
+                        error_message = ?,
+                        updated_at = ?
+                    WHERE doc_id = ?;
+                    """,
+                    (f"Corrupted or ambiguous state encountered during recovery of transaction {tx_id}", now_iso, doc_id),
+                )
+                conn.execute("COMMIT;")
+        except Exception:
+            pass
+
     # -------------------------------------------------------------------------
     # Recoverable Document Deletion
     # -------------------------------------------------------------------------
@@ -572,17 +719,27 @@ class EmbeddingService:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         with self._get_connection() as conn:
-            cur = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,))
-            record = cur.fetchone()
-            if not record:
-                return False
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                cur = conn.execute("SELECT * FROM documents WHERE doc_id = ?", (doc_id,))
+                record = cur.fetchone()
+                if not record:
+                    conn.execute("ROLLBACK;")
+                    return False
 
-            # Set status to DELETING
-            conn.execute(
-                "UPDATE documents SET status = 'DELETING', updated_at = ? WHERE doc_id = ?",
-                (now_iso, doc_id),
-            )
-            conn.commit()
+                # Set status to DELETING
+                conn.execute(
+                    "UPDATE documents SET status = 'DELETING', updated_at = ? WHERE doc_id = ?",
+                    (now_iso, doc_id),
+                )
+                conn.execute("COMMIT;")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK;")
+                except Exception:
+                    pass
+                raise
 
         # Delete all disk artifacts associated with this doc_id
         patterns = [
@@ -602,8 +759,17 @@ class EmbeddingService:
 
         # Delete from SQLite (cascades to chunks table via FOREIGN KEY ON DELETE CASCADE)
         with self._get_connection() as conn:
-            conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
-            conn.commit()
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+                conn.execute("COMMIT;")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK;")
+                except Exception:
+                    pass
+                raise
 
         return True
 

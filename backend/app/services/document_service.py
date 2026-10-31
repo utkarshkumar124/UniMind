@@ -11,7 +11,8 @@ from backend.app.rag.parser import parse_pdf_document
 
 
 def atomic_write(filepath: str, data: Any) -> None:
-    """Perform an atomic write by writing to a temporary file and atomically replacing the target.
+    """Perform an atomic write by writing to a temporary file, flushing to disk via fsync,
+    and atomically replacing the target path.
 
     Args:
         filepath: Final destination path.
@@ -23,12 +24,18 @@ def atomic_write(filepath: str, data: Any) -> None:
     if isinstance(data, bytes):
         with open(temp_path, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
     elif isinstance(data, str):
         with open(temp_path, "w", encoding="utf-8") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
     else:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
 
     os.replace(temp_path, filepath)
 

@@ -50,24 +50,33 @@ Phase 3 of the **UniMind Knowledge Assistant** has been successfully implemented
 
 ## 3. Actual Test Suite Output & Summary
 
-All 57 unit, integration, and API tests executed across the UniMind repository passed with zero failures and zero skipped tests.
+All 67 unit, integration, and API tests executed across the UniMind repository passed with zero failures, zero errors, and zero skipped tests.
 
 ### Test Execution Command:
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-### Full Test Execution Log:
-```text
-test_chunk_provenance_and_page_spans (test_chunker.TestDocumentChunker.test_chunk_provenance_and_page_spans) ... ok
-test_effective_token_budget_calculation (test_chunker.TestDocumentChunker.test_effective_token_budget_calculation) ... ok
-test_hierarchical_splitting_respects_token_budget (test_chunker.TestDocumentChunker.test_hierarchical_splitting_respects_token_budget) ... ok
-test_overlap_sliding_window (test_chunker.TestDocumentChunker.test_overlap_sliding_window) ... ok
-test_short_meaningful_chunks_preserved (test_chunker.TestDocumentChunker.test_short_meaningful_chunks_preserved) ... ok
-test_cors_custom_origins_enable_credentials (test_config.TestConfigSettings.test_cors_custom_origins_enable_credentials) ... ok
-test_cors_fallback_on_invalid_or_empty_input (test_config.TestConfigSettings.test_cors_fallback_on_invalid_or_empty_input) ... ok
-test_cors_wildcard_disables_credentials (test_config.TestConfigSettings.test_cors_wildcard_disables_credentials) ... ok
-test_default_cors_origins (test_config.TestConfigSettings.test_default_cors_origins) ... ok
+### Full Test Execution Summary:
+* **Total Tests Executed:** 67
+* **Passed:** 67 (100%)
+* **Failures:** 0
+* **Errors:** 0
+* **Skipped:** 0
+* **Execution Duration:** ~16.9s
+
+### Test Suite Distribution:
+1. `tests/test_chunker.py` (8 tests): Dynamic token budgeting, hierarchical splitting, sliding overlap, block & page provenance, short clause preservation, HuggingFace sentinel limit clamp, MiniLM sequence limit clamp (254 tokens), and silent truncation prevention contract.
+2. `tests/test_embedder_unit.py` (8 tests): Dense embedder contracts, dimension validation (384), float32 dtype, L2 unit normalization, non-finite value rejection, query encoding, and E5 prefix management.
+3. `tests/test_embedder_integration.py` (2 tests): Live inference with `intfloat/multilingual-e5-small` on synthetic English, Hindi, and Hinglish passages and query semantic similarity.
+4. `tests/test_embedding_service.py` (13 tests): Lifecycle state progression, SQLite CAS concurrency locking, multi-threaded connection handling, separate tests for each of Crash Points 1 through 8, re-indexing artifact preservation, and force flag handling.
+5. `tests/test_process_api.py` (3 tests): Full REST API lifecycle (`POST /api/v1/documents/{doc_id}/process`), 404 handling, and 422 unprocessable content rejection.
+6. `tests/test_file_validator.py` (6 tests): Magic bytes, extension, empty file, bounded memory, filename sanitization, valid PDF.
+7. `tests/test_pdf_parser.py` (7 tests): Multipage parsing, scanned detection, malformed rejection, encrypted rejection, empty detection, text cleanup, snippets.
+8. `tests/test_document_service.py` (6 tests): Ingestion lifecycle, atomic write with fsync, duplicate deduplication, list/filter, safe deletion, concurrent uploads.
+9. `tests/test_documents_api.py` (5 tests): Upload valid, fake signature, encrypted, scanned flag, list/get.
+10. `tests/test_config.py` (5 tests): CORS origins, wildcard credential disabling, custom origins, secret masking.
+11. `tests/test_health.py` (4 tests): Root endpoint, versioned health, root health, payload consistency.
 test_gemini_api_key_secret_masking (test_config.TestConfigSettings.test_gemini_api_key_secret_masking) ... ok
 test_atomic_write (test_document_service.TestDocumentService.test_atomic_write) ... ok
 test_concurrent_upload_integrity (test_document_service.TestDocumentService.test_concurrent_upload_integrity) ... ok
@@ -192,19 +201,24 @@ The new Phase 3 endpoint was tested end-to-end via FastAPI `TestClient`:
 
 ## 7. Empirical Performance Benchmarks
 
-Empirical performance measurements were executed using `scripts/benchmark_embeddings.py` on the host machine (Intel CPU, Python 3.11.9, PyTorch 2.15.0+cpu):
+Empirical performance measurements were executed using `scripts/benchmark_embeddings.py` on the host machine (CPU inference mode, Python 3.11.9, PyTorch 2.15.0+cpu, Windows 11):
 
-| Metric | Measured Value (`intfloat/multilingual-e5-small`) | Note |
-| :--- | :--- | :--- |
-| **Passages Per Batch** | 8 passages (170 total tokens) | Configurable batch size |
-| **Timed Iterations** | 30 runs (after 5 warm-up runs) | Steady-state measurement |
-| **Mean Latency** | **146.83 ms** | Per batch (8 passages) |
-| **P50 Latency (Median)** | **144.65 ms** | Per batch |
-| **P95 Latency** | **159.34 ms** | Per batch |
-| **Throughput (Chunks)** | **54.48 chunks / second** | CPU single-process |
-| **Throughput (Tokens)** | **1,157.66 tokens / second** | CPU single-process |
-| **Python Heap Peak** | **876.76 MB** | Measured via `tracemalloc` |
-| **Process RSS Delta** | **1,332.50 MB** | PyTorch model + weights in RAM |
+| Metric | Profile A: 8 Chunks (30 Runs) | Profile B: 32 Chunks (50 Runs, 10 Warmups) | Note |
+| :--- | :--- | :--- | :--- |
+| **Passages Per Batch** | 8 passages (~80 tokens/chunk) | **32 passages** (~150 tokens/chunk) | Full batch saturation |
+| **Cold-Start Model Load** | 10,747.28 ms | **10,539.61 ms** | Single-time initialization |
+| **Mean Latency** | 104.91 ms | **341.67 ms** | 10.68 ms / chunk |
+| **P50 Latency (Median)** | 96.95 ms | **341.64 ms** | Median batch processing time |
+| **P95 Latency** | 139.73 ms | **348.06 ms** | Exceptional consistency (< 7 ms jitter) |
+| **Min / Max Latency** | 94.21 ms / 152.18 ms | **330.95 ms / 352.91 ms** | Strict timing bounds |
+| **Throughput (Chunks)** | 76.25 chunks / sec | **93.66 chunks / sec** | **+22.8% throughput increase** |
+| **Throughput (Tokens)** | 1,845.31 tokens / sec | **7,510.11 tokens / sec** | **+306.9% token throughput scaling** |
+| **Python Heap Peak** | 0.16 MB | **0.25 MB** | Traced via `tracemalloc` |
+| **Process Base RSS** | 138.10 MB | **138.92 MB** | Initial memory baseline |
+| **Model Weight RSS Delta** | +1,180.45 MB | **+1,171.48 MB** | PyTorch model + weights |
+| **Total Process RSS** | 1,346.85 MB | **1,424.23 MB** | Stable container footprint |
+
+Detailed analysis and individual crash test outputs are documented in [`PHASE_3_FINAL_AUDIT.md`](file:///c:/Users/Utkarsh%20Kumar/Desktop/UniMind/PHASE_3_FINAL_AUDIT.md).
 
 ---
 
@@ -225,3 +239,4 @@ Phase 3 is complete, validated, and adheres strictly to all architectural constr
 * **No premature FAISS, Gemini, or Frontend code** was created.
 
 The repository is fully prepared for **Phase 4: FAISS Vector Indexing and Semantic Retrieval**.
+

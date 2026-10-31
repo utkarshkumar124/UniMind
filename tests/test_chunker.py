@@ -159,6 +159,43 @@ class TestDocumentChunker(unittest.TestCase):
             self.assertEqual(c.chunk_index, idx)
             self.assertIn(f"doc_overlap_test#p1#c{idx}", c.chunk_id)
 
+    def test_sentinel_token_limit_handling(self):
+        """Verify that tokenizers reporting sentinel/unbounded values (e.g. 1e30) safely default to 512."""
+        class SentinelTokenizer(SimpleWhitespaceTokenizer):
+            model_max_length: int = 1000000000000000019884624838656
+
+        prefix = "passage: "
+        budget = calculate_effective_token_budget(SentinelTokenizer(), prefix=prefix)
+        prefix_len = len(SentinelTokenizer().encode(prefix, add_special_tokens=False))
+        self.assertEqual(budget, 512 - 2 - prefix_len)
+
+    def test_minilm_fallback_budget_and_clamping(self):
+        """Verify that MiniLM fallback enforces its 256 sequence limit and clamps chunk size from 380 to 254."""
+        class MiniLMTokenizer(SimpleWhitespaceTokenizer):
+            model_max_length: int = 256
+
+        budget = calculate_effective_token_budget(MiniLMTokenizer(), prefix="")
+        self.assertEqual(budget, 256 - 2)  # 254 usable tokens
+
+        minilm_chunker = DocumentChunker(
+            tokenizer=MiniLMTokenizer(),
+            target_chunk_size=380,
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+        )
+        self.assertEqual(minilm_chunker.target_chunk_size, 254)
+
+    def test_prevention_of_silent_truncation_contract(self):
+        """Verify that any text exceeding model maximum capacity triggers VectorValidationError."""
+        from backend.app.rag.embedder import DenseEmbedder, VectorValidationError
+        embedder = DenseEmbedder(use_mock=True)
+        # Create oversized text (> 512 whitespace tokens)
+        oversized = "word " * 600
+
+        with self.assertRaises(VectorValidationError) as ctx:
+            embedder.encode_passages([oversized])
+        self.assertIn("exceeding model maximum capacity", str(ctx.exception))
+
+
 
 if __name__ == "__main__":
     unittest.main()

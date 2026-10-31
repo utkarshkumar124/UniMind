@@ -28,9 +28,11 @@ class VectorValidationError(ValueError):
 class MockEmbeddingModel:
     """Fast, deterministic mock embedding model for isolated unit tests without network or PyTorch."""
 
-    def __init__(self, dimension: int = 384, max_seq_length: int = 512):
+    def __init__(self, dimension: int = 384, max_seq_length: int = 512, tokenizer=None):
         self.dimension = dimension
         self.max_seq_length = max_seq_length
+        from backend.app.rag.chunker import SimpleWhitespaceTokenizer
+        self.tokenizer = tokenizer or SimpleWhitespaceTokenizer()
 
     def encode(
         self,
@@ -222,6 +224,15 @@ class DenseEmbedder:
         """Encode a user query into a single L2-normalized dense vector."""
         cleaned = query.strip()
         formatted = f"{self.query_prefix}{cleaned}"
+
+        # Verify query does not exceed model maximum sequence length
+        if hasattr(self.model, "tokenizer") and hasattr(self.model, "max_seq_length"):
+            tok_len = len(self.model.tokenizer.encode(formatted, add_special_tokens=True))
+            if tok_len > self.model.max_seq_length:
+                raise VectorValidationError(
+                    f"Query has {tok_len} tokens, exceeding model maximum capacity ({self.model.max_seq_length})."
+                )
+
         vector = self.model.encode(
             formatted,
             normalize_embeddings=True,

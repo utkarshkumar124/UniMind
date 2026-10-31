@@ -34,26 +34,30 @@ def get_tokenizer_for_model(model_name: Optional[str] = None):
 
 def calculate_effective_token_budget(tokenizer, prefix: str = "passage: ") -> int:
     """Calculate exact usable text token capacity dynamically using tokenizer metadata."""
-    model_max_len = getattr(tokenizer, "model_max_length", 512)
-    # Ensure reasonable upper bound if tokenizer reports unbounded (e.g. 1e30)
-    if model_max_len > 4096:
+    model_max_len = getattr(tokenizer, "max_seq_length", getattr(tokenizer, "model_max_length", 512))
+    # Ensure reasonable upper bound if tokenizer reports unbounded sentinel values (e.g. 1e30)
+    if not isinstance(model_max_len, int) or model_max_len > 4096:
         model_max_len = 512
 
-    # Measure special tokens added automatically by the tokenizer (e.g. <s> and </s>)
+    # Measure special tokens added automatically by the tokenizer (e.g. <s> and </s> or [CLS] and [SEP])
     if hasattr(tokenizer, "build_inputs_with_special_tokens"):
         special_tokens_count = len(tokenizer.build_inputs_with_special_tokens([]))
+    elif hasattr(tokenizer, "num_special_tokens_to_add"):
+        special_tokens_count = tokenizer.num_special_tokens_to_add(pair=False)
     else:
         special_tokens_count = 2
 
     # Measure exact prefix tokens
-    if hasattr(tokenizer, "encode"):
+    if hasattr(tokenizer, "encode") and prefix:
         prefix_tokens = tokenizer.encode(prefix, add_special_tokens=False)
         prefix_tokens_count = len(prefix_tokens)
-    else:
+    elif prefix:
         prefix_tokens_count = len(prefix.split())
+    else:
+        prefix_tokens_count = 0
 
     usable_budget = model_max_len - special_tokens_count - prefix_tokens_count
-    return max(usable_budget, 64)
+    return max(usable_budget, 32)
 
 
 def split_text_hierarchical(text: str, max_tokens: int, tokenizer) -> List[str]:
@@ -135,9 +139,11 @@ class DocumentChunker:
         passage_prefix: str = "passage: ",
         chunk_size_tokens: Optional[int] = None,
         chunk_overlap_tokens: Optional[int] = None,
+        model_name: Optional[str] = None,
     ):
-        self.tokenizer = tokenizer or get_tokenizer_for_model()
-        self.prefix = passage_prefix if "e5" in settings.EMBEDDING_MODEL_NAME.lower() else ""
+        target_name = model_name or settings.EMBEDDING_MODEL_NAME
+        self.tokenizer = tokenizer or get_tokenizer_for_model(target_name)
+        self.prefix = passage_prefix if "e5" in target_name.lower() else ""
         self.effective_budget = calculate_effective_token_budget(self.tokenizer, self.prefix)
 
         # Ensure target_chunk_size does not exceed effective model capacity
