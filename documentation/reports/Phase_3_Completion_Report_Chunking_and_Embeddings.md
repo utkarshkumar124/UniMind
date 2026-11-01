@@ -63,7 +63,7 @@ python -m unittest discover -s tests -v
 * **Failures:** 0
 * **Errors:** 0
 * **Skipped:** 0
-* **Execution Duration:** ~16.9s
+* **Execution Duration:** 48.374s
 
 ### Test Suite Distribution:
 1. `tests/test_chunker.py` (8 tests): Dynamic token budgeting, hierarchical splitting, sliding overlap, block & page provenance, short clause preservation, HuggingFace sentinel limit clamp, MiniLM sequence limit clamp (254 tokens), and silent truncation prevention contract.
@@ -77,6 +77,21 @@ python -m unittest discover -s tests -v
 9. `tests/test_documents_api.py` (5 tests): Upload valid, fake signature, encrypted, scanned flag, list/get.
 10. `tests/test_config.py` (5 tests): CORS origins, wildcard credential disabling, custom origins, secret masking.
 11. `tests/test_health.py` (4 tests): Root endpoint, versioned health, root health, payload consistency.
+
+### Complete Captured Test Execution Log:
+```text
+test_chunk_provenance_and_page_spans (test_chunker.TestDocumentChunker.test_chunk_provenance_and_page_spans) ... ok
+test_effective_token_budget_calculation (test_chunker.TestDocumentChunker.test_effective_token_budget_calculation) ... ok
+test_hierarchical_splitting_respects_token_budget (test_chunker.TestDocumentChunker.test_hierarchical_splitting_respects_token_budget) ... ok
+test_minilm_fallback_budget_and_clamping (test_chunker.TestDocumentChunker.test_minilm_fallback_budget_and_clamping) ... ok
+test_overlap_sliding_window (test_chunker.TestDocumentChunker.test_overlap_sliding_window) ... ok
+test_prevention_of_silent_truncation_contract (test_chunker.TestDocumentChunker.test_prevention_of_silent_truncation_contract) ... ok
+test_sentinel_token_limit_handling (test_chunker.TestDocumentChunker.test_sentinel_token_limit_handling) ... ok
+test_short_meaningful_chunks_preserved (test_chunker.TestDocumentChunker.test_short_meaningful_chunks_preserved) ... ok
+test_cors_custom_origins_enable_credentials (test_config.TestConfigSettings.test_cors_custom_origins_enable_credentials) ... ok
+test_cors_fallback_on_invalid_or_empty_input (test_config.TestConfigSettings.test_cors_fallback_on_invalid_or_empty_input) ... ok
+test_cors_wildcard_disables_credentials (test_config.TestConfigSettings.test_cors_wildcard_disables_credentials) ... ok
+test_default_cors_origins (test_config.TestConfigSettings.test_default_cors_origins) ... ok
 test_gemini_api_key_secret_masking (test_config.TestConfigSettings.test_gemini_api_key_secret_masking) ... ok
 test_atomic_write (test_document_service.TestDocumentService.test_atomic_write) ... ok
 test_concurrent_upload_integrity (test_document_service.TestDocumentService.test_concurrent_upload_integrity) ... ok
@@ -96,13 +111,20 @@ test_mock_embedder_encodes_query (test_embedder_unit.TestEmbedderUnit.test_mock_
 test_prefix_assignment (test_embedder_unit.TestEmbedderUnit.test_prefix_assignment) ... ok
 test_rejection_of_non_finite_values (test_embedder_unit.TestEmbedderUnit.test_rejection_of_non_finite_values) ... ok
 test_rejection_of_unnormalized_vectors (test_embedder_unit.TestEmbedderUnit.test_rejection_of_unnormalized_vectors) ... ok
-test_rejection_of_wrong_dimension (test_embedder_unit.TestEmbedderUnit.test_rejection_of_wrong_dimensions) ... ok
+test_rejection_of_wrong_dimensions (test_embedder_unit.TestEmbedderUnit.test_rejection_of_wrong_dimensions) ... ok
 test_rejection_of_wrong_dtype (test_embedder_unit.TestEmbedderUnit.test_rejection_of_wrong_dtype) ... ok
 test_valid_embedding_matrix (test_embedder_unit.TestEmbedderUnit.test_valid_embedding_matrix) ... ok
 test_concurrency_lock_prevents_duplicate_processing (test_embedding_service.TestEmbeddingService.test_concurrency_lock_prevents_duplicate_processing) ... ok
-test_crash_recovery_committed_finalizes_artifacts (test_embedding_service.TestEmbeddingService.test_crash_recovery_committed_finalizes_artifacts) ... ok
-test_crash_recovery_uncommitted_with_staged_files (test_embedding_service.TestEmbeddingService.test_crash_recovery_uncommitted_with_staged_files) ... ok
-test_recoverable_deletion_workflow (test_embedding_service.TestEmbeddingService.test_recoverable_deletion_workflow) ... ok
+test_concurrent_processing_separate_sqlite_connections (test_embedding_service.TestEmbeddingService.test_concurrent_processing_separate_sqlite_connections) ... ok
+test_crash_point_1_in_memory_chunking_inference (test_embedding_service.TestEmbeddingService.test_crash_point_1_in_memory_chunking_inference) ... ok
+test_crash_point_2_during_staging_files_exist (test_embedding_service.TestEmbeddingService.test_crash_point_2_during_staging_files_exist) ... ok
+test_crash_point_3_asymmetric_file_rotation (test_embedding_service.TestEmbeddingService.test_crash_point_3_asymmetric_file_rotation) ... ok
+test_crash_point_4_full_rollback_before_db_commit (test_embedding_service.TestEmbeddingService.test_crash_point_4_full_rollback_before_db_commit) ... ok
+test_crash_point_5_db_commit_failure_rollback (test_embedding_service.TestEmbeddingService.test_crash_point_5_db_commit_failure_rollback) ... ok
+test_crash_point_6_post_commit_crash_before_manifest_db_committed (test_embedding_service.TestEmbeddingService.test_crash_point_6_post_commit_crash_before_manifest_db_committed) ... ok
+test_crash_point_7_corrupted_backup_triggers_quarantine (test_embedding_service.TestEmbeddingService.test_crash_point_7_corrupted_backup_triggers_quarantine) ... ok
+test_crash_point_8_interrupted_deletion_recovery (test_embedding_service.TestEmbeddingService.test_crash_point_8_interrupted_deletion_recovery) ... ok
+test_failed_reindex_preserves_previous_valid_indexed_version (test_embedding_service.TestEmbeddingService.test_failed_reindex_preserves_previous_valid_indexed_version) ... ok
 test_reprocessing_without_force_rejected_with_force_succeeds (test_embedding_service.TestEmbeddingService.test_reprocessing_without_force_rejected_with_force_succeeds) ... ok
 test_successful_document_processing_lifecycle (test_embedding_service.TestEmbeddingService.test_successful_document_processing_lifecycle) ... ok
 test_read_and_validate_upload_success (test_file_validator.TestFileValidator.test_read_and_validate_upload_success) ... ok
@@ -127,14 +149,14 @@ test_process_nonexistent_document_returns_404 (test_process_api.TestProcessAPI.t
 test_process_valid_document_success_lifecycle (test_process_api.TestProcessAPI.test_process_valid_document_success_lifecycle) ... ok
 
 ----------------------------------------------------------------------
-Ran 57 tests in 59.032s
+Ran 67 tests in 48.374s
 
 OK
 ```
 
 ### Test Statistics:
-* **Total Tests Ran:** 57
-* **Passed:** 57 (100%)
+* **Total Tests Ran:** 67
+* **Passed:** 67 (100%)
 * **Failed:** 0
 * **Errors:** 0
 * **Skipped:** 0
