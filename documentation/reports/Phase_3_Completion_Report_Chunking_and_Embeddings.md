@@ -198,10 +198,15 @@ OK
 * Stages files as `{doc_id}_chunks.json.staged_{tx_id}` and `{doc_id}_embeddings.npy.staged_{tx_id}`.
 * Preserves active files as `.backup_{tx_id}` prior to rotation.
 
-### Startup Crash-Recovery Verification (Crash Points 1–8):
-* Tested uncommitted crash scenario (Crash Point 3): Staged files and uncommitted manifest are purged; document status reverts safely without database inconsistency.
-* Tested committed crash scenario (Crash Point 7): Crash occurring after SQLite commit restores active files, purges residual backups, and finalizes records without data loss.
-* Tested quarantine scenario: Corrupted manifests or unrecoverable files are moved to `.quarantine_{tx_id}` rather than destructively deleted.
+### Startup Crash-Recovery Verification (Crash Points 1–8 Mapping according to Plan v3.2):
+* **Crash Point 1 (`test_crash_point_1_in_memory_chunking_inference`):** Crash during chunking/inference before staging files. Manifest in `STAGING`. Recovery clears `staged_tx_id` and resets DB status to `FAILED`. Pre-existing active files remain intact.
+* **Crash Point 2 (`test_crash_point_2_during_staging_files_exist`):** Crash after staging files before rotation. Manifest in `STAGED`. Recovery unlinks `.staged_{tx_id}` files and manifest, resetting DB to `FAILED`.
+* **Crash Point 3 (`test_crash_point_3_asymmetric_file_rotation`):** Crash between the two file replacements during rotation. Manifest in `ROTATING`. Recovery inspects `rotated` flags, restores `chunks.backup` to active, unlinks `emb.staged`, and preserves previous valid state.
+* **Crash Point 4 (`test_crash_point_4_full_rollback_before_db_commit`):** Both files rotated, both backups exist, crash before SQLite commit. Manifest in `ROTATED`. Recovery restores both active files from backups, purges uncommitted files, and rolls back DB.
+* **Crash Point 5 (`test_crash_point_5_db_commit_failure_rollback`):** SQLite commit aborted / rolled back (`tx_id` mismatch or DB error). Recovery restores backups over active files, cleans staged files, and sets DB status to `FAILED`.
+* **Crash Point 6 (`test_crash_point_6_post_commit_crash_before_manifest_db_committed`):** SQLite committed (`INDEXED`), crash occurs before manifest `db_committed = true` is written. Authoritative SQLite state overrides manifest; recovery verifies active checksums, unlinks residual backups, and finalizes records without data loss.
+* **Crash Point 7 (`test_crash_point_7_corrupted_backup_triggers_quarantine`):** Active file was rotated, but backup is missing or corrupted during rollback. Non-destructive quarantine: preserves all files in `.quarantine_{tx_id}` and sets DB to `MANUAL_RECOVERY_REQUIRED` to prevent silent data destruction.
+* **Crash Point 8 (`test_crash_point_8_interrupted_deletion_recovery`):** Server crash during document deletion (`status = 'DELETING'`). Startup recovery identifies stuck deletion, cleans residual files, and removes DB row cleanly.
 
 ---
 

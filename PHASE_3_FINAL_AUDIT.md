@@ -133,21 +133,6 @@ All 8 crash failure points defined in Implementation Plan v3.2 were audited and 
 
 ---
 
-## 4. Concurrency & Recoverable Deletion Audit
-
-### 4.1 Multi-Threaded Concurrency Integrity
-- **Authoritative Lock:** Implemented via SQLite Compare-And-Swap (CAS) inside immediate transactions:
-  ```sql
-  UPDATE documents 
-  SET status = 'PROCESSING_EMBEDDINGS', staged_tx_id = ? 
-  WHERE doc_id = ? AND status IN ('PROCESSED', 'FAILED', 'INDEXED')
-  ```
-- **Verification Result:**
-  - Sequential duplicate processing calls without `force=True` raise `HTTP 400 Bad Request` ("Document is already indexed").
-  - Concurrent requests across separate threads attempt CAS simultaneously. Exactly 1 thread succeeds (CAS row count = 1); concurrent thread gets row count = 0 and raises `ConcurrencyConflictError` (HTTP 409).
-  - Outdated background workers cannot commit updates if `staged_tx_id` has been superseded.
-  - Verified by `test_concurrency_lock_prevents_duplicate_processing` and `test_concurrent_processing_separate_sqlite_connections`.
-
 ## 4. Concurrency, Locking & Recoverable Deletion Audit
 
 ### 4.1 Multi-Threaded & Multi-Worker SQLite Concurrency Integrity
@@ -206,6 +191,10 @@ All 8 crash failure points defined in Implementation Plan v3.2 were audited and 
 - **Formal Boundary:**
   UniMind guarantees **process-crash recovery and transactional consistency**. UniMind **does not claim power-loss durability** without enterprise storage systems featuring battery-backed write-cache controllers.
 
+---
+
+## 6. Dynamic Token Budgeting & Validation
+
 Empirical token budgets evaluated across models:
 
 | Model Identifier | `max_seq_length` | Special Tokens | Prefix Format | Prefix Tokens | Usable Token Budget | Target Chunk Clamping |
@@ -225,7 +214,7 @@ Verified by `test_prevention_of_silent_truncation_contract` (raises `VectorValid
 
 ---
 
-## 6. Empirical Performance Benchmarks
+## 7. Empirical Performance Benchmarks
 
 ### 6.1 Test Environment
 - **CPU:** Intel / AMD multi-core host
@@ -255,14 +244,14 @@ Verified by `test_prevention_of_silent_truncation_contract` (raises `VectorValid
 
 ---
 
-## 7. Full Repository Test Results
+## 8. Full Repository Test Results
 
-### 7.1 Execution Command
+### 8.1 Execution Command
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-### 7.2 Complete Pristine Test Execution Log
+### 8.2 Complete Pristine Test Execution Log
 ```text
 test_chunk_provenance_and_page_spans (test_chunker.TestDocumentChunker.test_chunk_provenance_and_page_spans) ... ok
 test_effective_token_budget_calculation (test_chunker.TestDocumentChunker.test_effective_token_budget_calculation) ... ok
@@ -338,7 +327,7 @@ Ran 67 tests in 48.374s
 OK
 ```
 
-### 7.3 Quantitative Test Reconciliation
+### 8.3 Quantitative Test Reconciliation
 - **Total Tests Ran:** 67
 - **Passed:** 67 (100%)
 - **Failed:** 0
@@ -346,7 +335,7 @@ OK
 - **Skipped:** 0 (Zero live model tests skipped; both live E5-small tests executed and passed).
 - **Execution Duration:** 48.374s
 
-### 7.4 Test Suite Breakdown: Regression vs. Newly Added Audit Tests
+### 8.4 Test Suite Breakdown: Regression vs. Newly Added Audit Tests
 - **Phase 1 & Phase 2 Regression Suite (41 tests — All Passing):**
   - `test_config.py`: 5 tests
   - `test_document_service.py`: 6 tests
@@ -364,7 +353,7 @@ OK
 
 ---
 
-## 8. Remaining Operational Risks & Mitigation
+## 9. Remaining Operational Risks & Mitigation
 
 1. **CPU Inference Latency on Large Documents:**
    - *Observation:* On pure CPU, encoding 32 chunks takes ~341 ms (~10.7 ms/chunk). A 50-page document (~150 chunks) will require ~1.6 seconds of inference time.
@@ -378,7 +367,7 @@ OK
 
 ---
 
-## 9. Git Repository & Commit Status
+## 10. Git Repository & Commit Status
 
 - **Remote Origin URL:** `https://github.com/utkarshkumar124/UniMind.git`
 - **Active Branch:** `main` (tracked with `origin/main`)
@@ -389,7 +378,7 @@ OK
 
 ---
 
-## 10. Conclusion & Phase Gate Recommendation
+## 11. Conclusion & Phase Gate Recommendation
 
 The UniMind Phase 3 implementation strictly fulfills all technical criteria mandated by Implementation Plan v3.2. Code quality, security, concurrency handling, token budgeting, durability, and crash recovery have been verified and documented.
 
