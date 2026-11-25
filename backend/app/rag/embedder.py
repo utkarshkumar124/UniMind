@@ -1,13 +1,21 @@
 """Dense vector embedding generator, validation contracts, and model lifecycle manager."""
 
 import os
+import time
+import logging
 import threading
 import hashlib
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 import numpy as np
 from fastapi import HTTPException, status
 
 from backend.app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+EMBEDDING_STATE_INITIALIZING = "INITIALIZING"
+EMBEDDING_STATE_READY = "READY"
+EMBEDDING_STATE_FAILED = "FAILED"
 
 
 class ModelInitializationError(HTTPException):
@@ -50,13 +58,10 @@ class MockEmbeddingModel:
 
         vectors = []
         for text in sentences:
-            # Deterministic pseudo-vector from text hash
             h = hashlib.sha256(text.encode("utf-8")).digest()
             repeat_count = self.dimension // len(h) + 1
             raw_bytes = (h * repeat_count)[: self.dimension]
-            # Convert uint8 bytes to float32 range [-128.0, 127.0] to prevent float overflow
             raw = np.frombuffer(raw_bytes, dtype=np.uint8).astype(np.float32) - 128.0
-            # Replace any potential zero vector
             if np.all(raw == 0):
                 raw[0] = 1.0
             if normalize_embeddings:
@@ -70,7 +75,7 @@ class MockEmbeddingModel:
 
 
 class EmbeddingModelManager:
-    """Thread-safe singleton managing embedding model lifecycle, caching, and inference."""
+    """Thread-safe singleton managing embedding model lifecycle, warmup, caching, and readiness."""
 
     _instance = None
     _lock = threading.Lock()
@@ -82,28 +87,157 @@ class EmbeddingModelManager:
                 cls._instance._model = None
                 cls._instance._model_name = None
                 cls._instance._tokenizer = None
+                cls._instance._state = EMBEDDING_STATE_INITIALIZING
+                cls._instance._error = None
+                cls._instance._load_time_ms = None
+                cls._instance._warmup_time_ms = None
         return cls._instance
 
+    @property
+    def status(self) -> str:
+        """Current embedding service readiness state: INITIALIZING, READY, or FAILED."""
+        return self._state
+
+    @property
+    def error(self) -> Optional[str]:
+        """Error message if initialization failed, otherwise None."""
+        return self._error
+
+    @property
+    def timings(self) -> Dict[str, Optional[float]]:
+        """Recorded model load and warmup timings in milliseconds."""
+        return {
+            "load_ms": self._load_time_ms,
+            "warmup_ms": self._warmup_time_ms,
+        }
+
+    def _load_sentence_transformer(self, target_name: str):
+        """Load SentenceTransformer, preferring local cache before checking remote HF Hub."""
+        from sentence_transformers import SentenceTransformer
+
+        cache_dir = settings.MODEL_CACHE_DIR or os.getenv("HF_HOME")
+        try:
+            return SentenceTransformer(target_name, cache_folder=cache_dir, local_files_only=True)
+        except (OSError, FileNotFoundError, TypeError):
+            # Fall back to standard download/resolution if not yet cached locally
+            return SentenceTransformer(target_name, cache_folder=cache_dir)
+
     def get_model(self, model_name: Optional[str] = None, use_mock: bool = False):
-        """Retrieve model instance with thread-safe lazy loading."""
+        """Retrieve cached model instance with thread-safe singleton loading."""
         if use_mock:
             return MockEmbeddingModel(dimension=settings.EMBEDDING_DIMENSION)
 
         target_name = model_name or settings.EMBEDDING_MODEL_NAME
+
+        # Lock-free fast path once initialized and ready
+        if (
+            self._model is not None
+            and self._model_name == target_name
+            and self._state == EMBEDDING_STATE_READY
+        ):
+            return self._model
+
         with self._lock:
-            if self._model is not None and self._model_name == target_name:
+            if (
+                self._model is not None
+                and self._model_name == target_name
+                and self._state == EMBEDDING_STATE_READY
+            ):
                 return self._model
 
+            # Do not retry loading on every request if startup/previous initialization failed
+            if self._state == EMBEDDING_STATE_FAILED and self._model_name == target_name:
+                raise ModelInitializationError(self._error or "Previous initialization failed.")
+
+            self._state = EMBEDDING_STATE_INITIALIZING
+            self._error = None
+            t0 = time.perf_counter()
             try:
-                from sentence_transformers import SentenceTransformer
-                cache_dir = settings.MODEL_CACHE_DIR or os.getenv("HF_HOME")
-                # Configure extended timeout if specified
-                model = SentenceTransformer(target_name, cache_folder=cache_dir)
+                model = self._load_sentence_transformer(target_name)
+                self._load_time_ms = round((time.perf_counter() - t0) * 1000.0, 2)
                 self._model = model
                 self._model_name = target_name
+                self._state = EMBEDDING_STATE_READY
                 return self._model
             except Exception as e:
-                raise ModelInitializationError(f"Failed to load embedding model '{target_name}': {str(e)}")
+                self._load_time_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                self._model = None
+                self._model_name = target_name
+                self._state = EMBEDDING_STATE_FAILED
+                self._error = str(e)
+                logger.exception("Failed to load embedding model '%s': %s", target_name, e)
+                raise ModelInitializationError(f"Failed to load embedding model '{target_name}': {e}")
+
+    def initialize_and_warmup(
+        self,
+        model_name: Optional[str] = None,
+        force_retry: bool = False,
+    ) -> Dict[str, Optional[float]]:
+        """Load the embedding model and execute a warmup inference pass at application startup."""
+        target_name = model_name or settings.EMBEDDING_MODEL_NAME
+
+        with self._lock:
+            if (
+                not force_retry
+                and self._state == EMBEDDING_STATE_READY
+                and self._model is not None
+                and self._model_name == target_name
+            ):
+                return self.timings
+
+            if not force_retry and self._state == EMBEDDING_STATE_FAILED and self._model_name == target_name:
+                raise ModelInitializationError(self._error or "Previous initialization failed.")
+
+            self._state = EMBEDDING_STATE_INITIALIZING
+            self._error = None
+            self._model = None
+            self._model_name = target_name
+
+            t_load_start = time.perf_counter()
+            try:
+                model = self._load_sentence_transformer(target_name)
+                self._load_time_ms = round((time.perf_counter() - t_load_start) * 1000.0, 2)
+                self._model = model
+                self._model_name = target_name
+
+                # Warmup inference pass (tokenizer + model forward + L2 validation)
+                t_warm_start = time.perf_counter()
+                prefix = "query: " if "e5" in target_name.lower() else ""
+                warm_vec = model.encode(
+                    f"{prefix}warmup",
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                )
+                matrix = np.asarray(warm_vec, dtype=np.float32)
+                if matrix.ndim == 1:
+                    matrix = np.expand_dims(matrix, axis=0)
+                validate_embedding_matrix(matrix, expected_dimension=settings.EMBEDDING_DIMENSION)
+                self._warmup_time_ms = round((time.perf_counter() - t_warm_start) * 1000.0, 2)
+
+                self._state = EMBEDDING_STATE_READY
+                return self.timings
+            except Exception as e:
+                self._load_time_ms = round((time.perf_counter() - t_load_start) * 1000.0, 2)
+                self._warmup_time_ms = None
+                self._model = None
+                self._state = EMBEDDING_STATE_FAILED
+                self._error = str(e)
+                logger.exception("Embedding model startup initialization/warmup failed for '%s': %s", target_name, e)
+                if isinstance(e, ModelInitializationError):
+                    raise
+                raise ModelInitializationError(f"Failed to initialize embedding model '{target_name}': {e}")
+
+    def reset_state(self) -> None:
+        """Reset singleton state (intended solely for isolated unit tests)."""
+        with self._lock:
+            self._model = None
+            self._model_name = None
+            self._tokenizer = None
+            self._state = EMBEDDING_STATE_INITIALIZING
+            self._error = None
+            self._load_time_ms = None
+            self._warmup_time_ms = None
 
 
 def validate_embedding_matrix(matrix: np.ndarray, expected_dimension: int = settings.EMBEDDING_DIMENSION) -> None:
@@ -131,7 +265,6 @@ def validate_embedding_matrix(matrix: np.ndarray, expected_dimension: int = sett
     if not np.isfinite(matrix).all():
         raise VectorValidationError("Embeddings matrix contains non-finite values (NaN or Inf).")
 
-    # Verify unit norm across all rows
     norms = np.linalg.norm(matrix, axis=1)
     if not np.allclose(norms, 1.0, atol=1e-4):
         invalid_idx = np.where(~np.isclose(norms, 1.0, atol=1e-4))[0]
@@ -162,22 +295,12 @@ class DenseEmbedder:
         passages: List[str],
         batch_size: int = settings.EMBEDDING_BATCH_SIZE,
     ) -> np.ndarray:
-        """Encode a batch of text passages into L2-normalized 384-dimensional dense vectors.
-
-        Args:
-            passages: List of passage strings.
-            batch_size: Processing batch size.
-
-        Returns:
-            NumPy array of shape (len(passages), 384) with dtype float32.
-        """
+        """Encode a batch of text passages into L2-normalized 384-dimensional dense vectors."""
         if not passages:
             return np.empty((0, settings.EMBEDDING_DIMENSION), dtype=np.float32)
 
-        # Prepend passage prefix if required by model
         formatted_inputs = [f"{self.passage_prefix}{text.strip()}" for text in passages]
 
-        # Verify no silent truncation occurs
         if hasattr(self.model, "tokenizer") and hasattr(self.model, "max_seq_length"):
             max_len = self.model.max_seq_length
             for idx, text in enumerate(formatted_inputs):
@@ -188,7 +311,6 @@ class DenseEmbedder:
                         "Input must be sub-chunked to prevent silent truncation."
                     )
 
-        # Execute batched inference with L2 normalization
         vectors = self.model.encode(
             formatted_inputs,
             batch_size=batch_size,
@@ -201,7 +323,6 @@ class DenseEmbedder:
         if matrix.ndim == 1:
             matrix = np.expand_dims(matrix, axis=0)
 
-        # Enforce validation contracts
         validate_embedding_matrix(matrix, expected_dimension=settings.EMBEDDING_DIMENSION)
         return matrix
 
@@ -225,7 +346,6 @@ class DenseEmbedder:
         cleaned = query.strip()
         formatted = f"{self.query_prefix}{cleaned}"
 
-        # Verify query does not exceed model maximum sequence length
         if hasattr(self.model, "tokenizer") and hasattr(self.model, "max_seq_length"):
             tok_len = len(self.model.tokenizer.encode(formatted, add_special_tokens=True))
             if tok_len > self.model.max_seq_length:
@@ -253,9 +373,30 @@ _default_lock = threading.Lock()
 def get_default_embedder() -> DenseEmbedder:
     """Retrieve or create the global default DenseEmbedder instance."""
     global _default_embedder
+    if _default_embedder is not None and EmbeddingModelManager().status == EMBEDDING_STATE_READY:
+        return _default_embedder
+
     with _default_lock:
-        if _default_embedder is None:
-            _default_embedder = DenseEmbedder()
+        if _default_embedder is not None and EmbeddingModelManager().status == EMBEDDING_STATE_READY:
+            return _default_embedder
+        _default_embedder = DenseEmbedder()
         return _default_embedder
 
 
+def initialize_default_embedder(model_name: Optional[str] = None, force_retry: bool = False) -> DenseEmbedder:
+    """Initialize and warm up the global default DenseEmbedder during application startup."""
+    global _default_embedder
+    manager = EmbeddingModelManager()
+    manager.initialize_and_warmup(model_name=model_name, force_retry=force_retry)
+    with _default_lock:
+        if _default_embedder is None or _default_embedder.model_name != (model_name or settings.EMBEDDING_MODEL_NAME):
+            _default_embedder = DenseEmbedder(model_name=model_name)
+        return _default_embedder
+
+
+def reset_default_embedder() -> None:
+    """Clear cached default embedder and model manager state (for isolated unit tests)."""
+    global _default_embedder
+    with _default_lock:
+        _default_embedder = None
+    EmbeddingModelManager().reset_state()

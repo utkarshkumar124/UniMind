@@ -11,6 +11,14 @@ class HealthResponse(BaseModel):
     service: str = Field(..., description="Service name")
     version: str = Field(..., description="Application version")
     environment: str = Field(..., description="Deployment environment")
+    embedding_status: str = Field(
+        default="INITIALIZING",
+        description="Embedding service readiness state: INITIALIZING, READY, or FAILED",
+    )
+    embedding_error: Optional[str] = Field(
+        default=None,
+        description="Embedding initialization failure details when embedding_status is FAILED",
+    )
 
 
 class RootResponse(BaseModel):
@@ -143,3 +151,34 @@ class DocumentDeleteResponse(BaseModel):
     doc_id: str = Field(..., description="UUID of deleted document")
     deleted: bool = Field(default=True, description="Deletion confirmation")
     message: str = Field(..., description="Status message")
+
+
+class QueryRequest(BaseModel):
+    """Request payload for semantic retrieval and question answering."""
+
+    query: str = Field(..., min_length=1, description="User question or search query")
+    top_k: int = Field(default=4, ge=1, le=20, description="Maximum retrieved chunks to ground against")
+    department: Optional[str] = Field(default=None, description="Optional department filter")
+    category: Optional[str] = Field(default=None, description="Optional category filter")
+    min_similarity: Optional[float] = Field(default=None, description="Minimum similarity threshold")
+
+
+class SourceCitation(BaseModel):
+    """Verified source citation grounded in actual retrieved document provenance."""
+
+    n: int = Field(..., description="Citation index (e.g. 1, 2, 3)")
+    doc_id: str = Field(..., description="UUID of source document")
+    doc_title: str = Field(..., description="Display title or filename of source document")
+    page: int = Field(..., description="1-indexed page number of cited excerpt")
+    quote: str = Field(..., description="Verbatim cited text excerpt")
+    score: float = Field(..., description="Cosine similarity score of retrieval match")
+
+
+class QueryResponse(BaseModel):
+    """End-to-end grounded RAG answer with verified citations."""
+
+    query: str = Field(..., description="Original user query")
+    answer: str = Field(..., description="Grounded response text citing [1], [2] where applicable")
+    sources: List[SourceCitation] = Field(default_factory=list, description="List of referenced source citations")
+    total_sources: int = Field(default=0, description="Count of cited sources")
+    latency_ms: float = Field(..., description="Total processing latency in milliseconds")
