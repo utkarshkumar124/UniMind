@@ -49,6 +49,10 @@ export default function Settings() {
   const [embeddingError, setEmbeddingError] = useState<string | null>(null)
   const [serviceName, setServiceName] = useState('UniMind Knowledge Assistant')
   const [serviceVersion, setServiceVersion] = useState('0.1.0')
+  const [llmProvider, setLlmProvider] = useState<string>('extractive-fallback')
+  const [llmModel, setLlmModel] = useState<string | null>(null)
+  const [localLlmAvailable, setLocalLlmAvailable] = useState<boolean>(false)
+  const [localLlmModel, setLocalLlmModel] = useState<string | null>(null)
   const [clearConfirm, setClearConfirm] = useState(false)
   const [clearedNotice, setClearedNotice] = useState(false)
 
@@ -66,6 +70,10 @@ export default function Settings() {
         if (data.version) setServiceVersion(data.version)
         setEmbeddingStatus(data.embedding_status || 'READY')
         setEmbeddingError(data.embedding_error || null)
+        if (data.llm_provider) setLlmProvider(data.llm_provider)
+        setLlmModel(data.llm_model || null)
+        setLocalLlmAvailable(Boolean(data.local_llm_available))
+        setLocalLlmModel(data.local_llm_model || null)
       })
       .catch(() => {
         setBackendStatus('offline')
@@ -241,6 +249,37 @@ export default function Settings() {
                 ))}
               </div>
             </div>
+
+            <div className="p-3.5 rounded-xl bg-surface border border-line flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <span className="font-medium text-sm text-ink">Answer model</span>
+                <span className="block text-xs text-ink2">
+                  Auto uses Local Gemma 4 first and shifts to Gemini 3 when local is unavailable.
+                </span>
+              </div>
+              <div className="flex gap-1.5">
+                {(
+                  [
+                    { id: 'auto', label: 'Auto' },
+                    { id: 'gemini', label: 'Gemini 3' },
+                    { id: 'local', label: 'Gemma 4 Local' },
+                  ] as const
+                ).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => updateSetting('llmMode', m.id)}
+                    className={`py-1.5 px-3 rounded-lg border text-xs transition-colors ${
+                      settings.llmMode === m.id
+                        ? 'border-accent bg-accent-tint text-accent font-medium'
+                        : 'border-line bg-bg hover:bg-raised text-ink2'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </Section>
 
@@ -265,7 +304,9 @@ export default function Settings() {
               )}
             </div>
             <p className="text-xs text-ink3">
-              UniMind runs in a local session; university sign-in is not enabled yet.
+              {authService.isUsingSupabase()
+                ? 'Account authentication is connected via Supabase Auth; chats remain stored locally in this browser.'
+                : 'UniMind is running with local session storage.'}
             </p>
           </div>
         </Section>
@@ -323,6 +364,26 @@ export default function Settings() {
               {embeddingStatus === 'FAILED' && embeddingError && (
                 <div className="text-error text-[11px] pt-1">{embeddingError}</div>
               )}
+              <div className="flex justify-between">
+                <span className="text-ink3">Cloud LLM (Gemini API)</span>
+                <span className={llmProvider === 'gemini' ? 'text-accent font-medium' : 'text-ink2'}>
+                  {backendStatus !== 'connected'
+                    ? 'Unavailable'
+                    : llmProvider === 'gemini'
+                    ? `Active (${llmModel || 'gemini-3-flash-preview'})`
+                    : 'Not configured (no GEMINI_API_KEY)'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink3">Local LLM (LM Studio)</span>
+                <span className={localLlmAvailable ? 'text-accent font-medium' : 'text-ink2'}>
+                  {backendStatus !== 'connected'
+                    ? 'Unavailable'
+                    : localLlmAvailable
+                    ? `Ready (${localLlmModel || 'google/gemma-4-e4b'})`
+                    : 'Offline (start LM Studio server on :1234)'}
+                </span>
+              </div>
               <div className="flex justify-between">
                 <span className="text-ink3">Interface language</span>
                 <span>English (multilingual queries supported)</span>

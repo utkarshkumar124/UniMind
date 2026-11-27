@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useNavigate } from 'react-router-dom'
 import { Menu, PanelLeftOpen } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import Chat from './features/Chat'
@@ -11,6 +11,7 @@ import { authService } from './services/auth'
 import { getUserSettings, applyTheme, applyFontSize } from './services/storage'
 
 export default function App() {
+  const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [desktopCollapsed, setDesktopCollapsed] = useState(false)
 
@@ -18,8 +19,21 @@ export default function App() {
     const s = getUserSettings()
     applyTheme(s.theme)
     applyFontSize(s.fontSize)
+
+    const queryParams = new URLSearchParams(window.location.search)
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    if (
+      (queryParams.has('error') || queryParams.has('error_description') || hashParams.has('error') || hashParams.has('error_description')) &&
+      window.location.pathname !== '/auth'
+    ) {
+      navigate(`/auth${window.location.search}${window.location.hash}`, { replace: true })
+    }
+
     authService.syncSession()
-  }, [])
+    return authService.subscribeSupabaseEvents(() => {
+      navigate('/auth?mode=reset')
+    })
+  }, [navigate])
 
   return (
     <div className="flex h-full bg-shell">

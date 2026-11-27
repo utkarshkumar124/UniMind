@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, status
 from backend.app.core.config import settings
 from backend.app.models.schemas import HealthResponse
+from backend.app.rag.generator import GeminiLLMProvider, LocalOpenAILLMProvider
 from backend.app.rag.embedder import (
     EmbeddingModelManager,
     EMBEDDING_STATE_READY,
@@ -26,6 +27,20 @@ async def health_check() -> HealthResponse:
     else:
         overall_status = "initializing"
 
+    gemini = GeminiLLMProvider()
+    local_llm = LocalOpenAILLMProvider()
+    local_ok = local_llm.is_available()
+
+    if local_ok:
+        llm_provider = "local"
+        llm_model = local_llm.model
+    elif gemini.is_available():
+        llm_provider = "gemini"
+        llm_model = gemini.model
+    else:
+        llm_provider = "extractive-fallback"
+        llm_model = None
+
     return HealthResponse(
         status=overall_status,
         service=settings.PROJECT_NAME,
@@ -33,6 +48,11 @@ async def health_check() -> HealthResponse:
         environment=settings.ENVIRONMENT,
         embedding_status=emb_status,
         embedding_error=emb_error,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        local_llm_available=local_ok,
+        local_llm_model=local_llm.model if local_ok else getattr(settings, "LOCAL_LLM_MODEL", None),
+        default_llm_mode=getattr(settings, "LLM_PROVIDER", "auto"),
     )
 
 

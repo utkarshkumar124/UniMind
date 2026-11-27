@@ -13,15 +13,18 @@ import {
 } from 'lucide-react'
 import { authService } from '../services/auth'
 
-type AuthMode = 'signin' | 'register' | 'forgot'
+type AuthMode = 'signin' | 'register' | 'forgot' | 'reset'
+
+const VALID_MODES: AuthMode[] = ['signin', 'register', 'forgot', 'reset']
 
 export default function Auth() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const usingSupabase = authService.isUsingSupabase()
 
   const initialMode = (searchParams.get('mode') as AuthMode) || 'signin'
   const [mode, setMode] = useState<AuthMode>(
-    ['signin', 'register', 'forgot'].includes(initialMode) ? initialMode : 'signin'
+    VALID_MODES.includes(initialMode) ? initialMode : 'signin'
   )
 
   const [fullName, setFullName] = useState('')
@@ -42,10 +45,31 @@ export default function Auth() {
 
   useEffect(() => {
     const paramMode = searchParams.get('mode') as AuthMode | null
-    if (paramMode && ['signin', 'register', 'forgot'].includes(paramMode) && paramMode !== mode) {
+    if (paramMode && VALID_MODES.includes(paramMode)) {
       setMode(paramMode)
     }
   }, [searchParams])
+
+  useEffect(() => {
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    const queryParams = new URLSearchParams(window.location.search)
+    const oauthErr =
+      queryParams.get('error_description') ||
+      hashParams.get('error_description') ||
+      queryParams.get('error') ||
+      hashParams.get('error')
+    if (oauthErr) {
+      setError(decodeURIComponent(oauthErr.replace(/\+/g, ' ')))
+    }
+  }, [])
+
+  useEffect(() => {
+    return authService.subscribeSupabaseEvents(() => {
+      setMode('reset')
+      setError(null)
+      setNotice('Verified! Enter your new password below.')
+    })
+  }, [])
 
   const switchMode = (next: AuthMode) => {
     setMode(next)
@@ -80,6 +104,18 @@ export default function Auth() {
     }
   }
 
+  const handleGoogleSignIn = async () => {
+    setError(null)
+    setNotice(null)
+    setBusy(true)
+    try {
+      await authService.signInWithGoogle()
+    } catch (err: any) {
+      setError(err?.message || 'Google Sign-In failed.')
+      setBusy(false)
+    }
+  }
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
@@ -102,12 +138,20 @@ export default function Auth() {
     }
     setBusy(true)
     try {
-      await authService.register({
+      const res = await authService.register({
         fullName: fullName.trim(),
         email: email.trim(),
         password,
         registrationNo: registrationNo.trim(),
       })
+      if (res.requiresEmailConfirmation) {
+        setMode('signin')
+        setSearchParams({ mode: 'signin' }, { replace: true })
+        setPassword('')
+        setConfirmPassword('')
+        setNotice(res.message || 'Check your email to confirm your account, then sign in.')
+        return
+      }
       navigate('/')
     } catch (err: any) {
       setError(err?.message || 'Registration failed.')
@@ -127,11 +171,39 @@ export default function Auth() {
     setBusy(true)
     try {
       const res = await authService.requestPasswordReset(email.trim())
-      setDevResetCode(res.devResetCode || null)
       setNotice(res.message)
-      setForgotStep('reset')
+      if (!res.viaSupabaseEmail) {
+        setDevResetCode(res.devResetCode || null)
+        setForgotStep('reset')
+      }
     } catch (err: any) {
       setError(err?.message || 'Could not start password reset.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSupabaseRecoveryUpdate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setNotice(null)
+    if (password.length < 6) {
+      setError('New password must be at least 6 characters long.')
+      return
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+    setBusy(true)
+    try {
+      const msg = await authService.updateSupabasePassword(password)
+      setPassword('')
+      setConfirmPassword('')
+      setNotice(msg)
+      navigate('/')
+    } catch (err: any) {
+      setError(err?.message || 'Could not update password.')
     } finally {
       setBusy(false)
     }
@@ -180,6 +252,8 @@ export default function Auth() {
       ? 'Welcome back'
       : mode === 'register'
       ? 'Create your account'
+      : mode === 'reset'
+      ? 'Set new password'
       : 'Reset your password'
 
   const subtitleText =
@@ -187,12 +261,16 @@ export default function Auth() {
       ? 'Sign in to sync your student profile across UniMind.'
       : mode === 'register'
       ? 'Register with your student email to personalize your UniMind assistant.'
+      : mode === 'reset'
+      ? 'Choose a strong new password for your Supabase account.'
+      : usingSupabase
+      ? 'Enter your email to receive a password recovery link.'
       : forgotStep === 'email'
       ? 'Enter your registered email to receive a 6-digit reset verification code.'
       : 'Enter the verification code and choose a new password.'
 
   return (
-    <div className="relative flex-1 overflow-y-auto px-4 py-8 flex flex-col justify-center items-center refero-enter">
+    <div className="relative flex-1 overflow-y-auto px-4 py-6 sm:py-8 flex flex-col items-center refero-enter">
       {/* Ambient Monochrome Liquid Refraction Backdrop */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
         <div
@@ -205,7 +283,7 @@ export default function Auth() {
         />
       </div>
 
-      <div className="relative z-10 w-full max-w-[430px] space-y-5">
+      <div className="relative z-10 w-full max-w-[430px] my-auto space-y-4">
         {/* Back button pill */}
         <button
           type="button"
@@ -230,7 +308,7 @@ export default function Auth() {
           </div>
 
           {/* Mode Tabs (Liquid Glass Segmented Pill) */}
-          {mode !== 'forgot' && (
+          {mode !== 'forgot' && mode !== 'reset' && (
             <div className="relative z-10 grid grid-cols-2 p-1 rounded-full bg-black/35 border border-white/10 backdrop-blur-md">
               <button
                 type="button"
@@ -445,6 +523,29 @@ export default function Auth() {
             </form>
           )}
 
+          {/* Sign in with Google Option */}
+          {(mode === 'signin' || mode === 'register') && (
+            <div className="relative z-10 space-y-3">
+              <div className="flex items-center gap-3 text-[11.5px] text-ink3 uppercase tracking-wider">
+                <div className="h-px flex-1 bg-white/10" />
+                <span>or</span>
+                <div className="h-px flex-1 bg-white/10" />
+              </div>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={handleGoogleSignIn}
+                className="ios-glass-chip w-full h-11 rounded-full px-4 inline-flex items-center justify-center gap-2.5 text-[14px] font-medium text-ink transition-all"
+              >
+                <svg viewBox="0 0 24 24" className="w-4 h-4 fill-current shrink-0" aria-hidden="true">
+                  <path d="M21.35 11.1h-9.18v2.98h5.27c-.23 1.49-1.72 4.38-5.27 4.38-3.17 0-5.76-2.62-5.76-5.86s2.59-5.86 5.76-5.86c1.81 0 3.02.77 3.71 1.43l2.53-2.44C16.79 4.22 14.69 3.3 12.17 3.3 7.03 3.3 2.86 7.47 2.86 12.6s4.17 9.3 9.31 9.3c5.37 0 8.93-3.77 8.93-9.09 0-.61-.07-1.08-.15-1.71z" />
+                </svg>
+                <span>Continue with Google</span>
+              </button>
+            </div>
+          )}
+
           {/* Forgot Password Flow */}
           {mode === 'forgot' && forgotStep === 'email' && (
             <form onSubmit={handleRequestReset} className="space-y-4">
@@ -593,6 +694,69 @@ export default function Auth() {
               </div>
             </form>
           )}
+
+          {/* Supabase Password Recovery Reset Form (from email link /auth?mode=reset) */}
+          {mode === 'reset' && (
+            <form onSubmit={handleSupabaseRecoveryUpdate} className="space-y-4">
+              <div className="space-y-1.5">
+                <label htmlFor="sb-new-pw" className="block text-[12.5px] font-medium text-ink2">
+                  New password <span className="text-ink3 font-normal">(min 6 chars)</span>
+                </label>
+                <div className="relative">
+                  <KeyRound size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink3" />
+                  <input
+                    id="sb-new-pw"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Choose a new password"
+                    className="input !pl-10 !pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-ink3 hover:text-ink transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="sb-confirm-pw" className="block text-[12.5px] font-medium text-ink2">
+                  Confirm new password
+                </label>
+                <input
+                  id="sb-confirm-pw"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Confirm new password"
+                  className="input"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={busy}
+                className="btn btn-primary w-full h-11 rounded-full text-[14.5px] font-semibold"
+              >
+                {busy ? 'Updating password…' : 'Save new password'}
+              </button>
+            </form>
+          )}
+
+          {/* Subtle Auth Provider Status */}
+          <div className="pt-1 border-t border-white/10 text-center">
+            <span className="text-[11.5px] text-ink3">
+              {usingSupabase
+                ? 'Supabase Auth active (email verification & password recovery enabled)'
+                : 'Local Auth mode · Set VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY in frontend/.env.local for Supabase Auth'}
+            </span>
+          </div>
         </div>
       </div>
     </div>

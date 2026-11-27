@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import ReactMarkdown from 'react-markdown'
 import {
   Bookmark,
   Search,
@@ -16,6 +15,7 @@ import {
   conversationExists,
 } from '../services/storage'
 import SourcePanel from '../components/SourcePanel'
+import MarkdownAnswer from '../components/MarkdownAnswer'
 import type { SavedAnswer, Source } from '../services/types'
 
 export default function SavedAnswers() {
@@ -154,38 +154,12 @@ export default function SavedAnswers() {
                       </div>
                     </div>
 
-                    <div className="prose-um text-sm">
-                      <ReactMarkdown
-                        urlTransform={(u) => u}
-                        components={{
-                          a: ({ href, children }) => {
-                            const n = href?.startsWith('#cite-') ? Number(href.slice(6)) : 0
-                            const s = item.sources?.find((x) => x.n === n)
-                            return n ? (
-                              <button
-                                type="button"
-                                disabled={!s}
-                                onClick={() => s && setSelectedSource(s)}
-                                className="inline-flex items-center justify-center text-[11px] font-semibold px-1.5 py-0.5 mx-0.5 rounded bg-accent-tint text-accent hover:bg-accent hover:text-accent-ink leading-none align-baseline transition-colors"
-                              >
-                                {n}
-                              </button>
-                            ) : (
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-accent underline underline-offset-2"
-                              >
-                                {children}
-                              </a>
-                            )
-                          },
-                        }}
-                      >
-                        {item.content.replace(/\[(\d+)\]/g, '[$1](#cite-$1)')}
-                      </ReactMarkdown>
-                    </div>
+                    <MarkdownAnswer
+                      content={item.content}
+                      sources={item.sources}
+                      onOpenSource={setSelectedSource}
+                      className="prose-um text-sm"
+                    />
 
                     {item.sources && item.sources.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1.5 pt-1">

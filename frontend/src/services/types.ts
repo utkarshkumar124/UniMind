@@ -31,6 +31,8 @@ export interface Message {
   feedback?: 'up' | 'down' | null
   feedbackReason?: string
   bookmarked?: boolean
+  providerUsed?: string
+  followups?: string[]
 }
 
 export interface Conversation {
@@ -49,11 +51,14 @@ export interface SavedAnswer {
   savedAt: number
 }
 
+export type LlmMode = 'auto' | 'gemini' | 'local'
+
 export interface UserSettings {
   theme: 'dark' | 'light' | 'system'
   enterToSend: boolean
   displayName: string
   fontSize: 'compact' | 'normal' | 'large'
+  llmMode: LlmMode
 }
 
 export interface AuthUser {
@@ -67,6 +72,8 @@ export interface AuthUser {
 export interface Reply {
   content: string
   sources: Source[]
+  providerUsed?: string
+  followups?: string[]
 }
 
 export interface ChatService {
@@ -76,7 +83,14 @@ export interface ChatService {
   createConversation(title: string): Promise<Conversation>
   renameConversation(id: string, title: string): Promise<void>
   deleteConversation(id: string): Promise<void>
-  reply(prompt: string, onToken: (t: string) => void, signal: AbortSignal, department?: string): Promise<Reply>
+  reply(
+    prompt: string,
+    onToken: (t: string) => void,
+    signal: AbortSignal,
+    department?: string,
+    llmProvider?: LlmMode,
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>
+  ): Promise<Reply>
   suggestions(): string[]
 }
 

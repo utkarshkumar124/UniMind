@@ -338,6 +338,32 @@ html[data-font-size='large'] {
     color: var(--text);
   }
 
+  .prose-um .katex,
+  .prose-um .katex * {
+    letter-spacing: 0;
+    line-height: normal;
+  }
+
+  .prose-um .katex {
+    color: var(--text);
+    font-size: 1.05em;
+  }
+
+  .prose-um .katex-display {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.85rem 1.1rem;
+    margin: 0.75em 0;
+  }
+
+  .prose-um .katex .mfrac > span > span {
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+
   .cursor::after {
     content: "";
     display: inline-block;

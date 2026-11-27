@@ -75,7 +75,18 @@ class Settings(BaseSettings):
     EMBEDDING_BATCH_SIZE: int = 32
     MODEL_CACHE_DIR: Union[str, None] = None
     GEMINI_API_KEY: SecretStr = SecretStr("")
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_TEMPERATURE: float = 0.2
+    GEMINI_MAX_OUTPUT_TOKENS: int = 2048
+    GEMINI_TIMEOUT_SECONDS: float = 20.0
+
+    # Local OpenAI-Compatible LLM (LM Studio / Gemma 4 / Ollama)
+    LLM_PROVIDER: str = "auto"  # "auto" (Local -> Gemini -> Extractive), "local", "gemini", or "extractive"
+    LOCAL_LLM_BASE_URL: str = "http://localhost:1234/v1"
+    LOCAL_LLM_MODEL: str = "google/gemma-4-e4b"
+    LOCAL_LLM_TIMEOUT_SECONDS: float = 18.0
+    LOCAL_LLM_MAX_TOKENS: int = 768
+    LOCAL_LLM_REASONING_EFFORT: str = "none"
 
     def get_gemini_api_key(self) -> str:
         """Safely expose the raw API key secret string only when explicitly invoking the LLM client."""

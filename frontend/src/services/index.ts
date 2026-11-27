@@ -1,4 +1,4 @@
-import type { ChatService, DocumentService, Doc, Reply, Source, Conversation, Message } from './types'
+import type { ChatService, DocumentService, Doc, Reply, Source, Conversation, Message, LlmMode } from './types'
 import {
   getConversations,
   saveConversation,
@@ -96,13 +96,25 @@ export const chatService: ChatService = {
     'How are end-term examination grades calculated?',
   ],
 
-  async reply(prompt: string, onToken: (t: string) => void, signal: AbortSignal, department?: string): Promise<Reply> {
+  async reply(
+    prompt: string,
+    onToken: (t: string) => void,
+    signal: AbortSignal,
+    department?: string,
+    llmProvider?: LlmMode,
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>
+  ): Promise<Reply> {
     let res: Response
     try {
       res = await fetch('/api/v1/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, ...(department ? { department } : {}) }),
+        body: JSON.stringify({
+          prompt,
+          ...(department ? { department } : {}),
+          ...(llmProvider ? { llm_provider: llmProvider } : {}),
+          ...(history && history.length > 0 ? { history } : {}),
+        }),
         signal,
       })
     } catch (e: any) {
@@ -133,7 +145,12 @@ export const chatService: ChatService = {
       await wait(12)
     }
 
-    return { content, sources }
+    return {
+      content,
+      sources,
+      providerUsed: data.provider_used || undefined,
+      followups: Array.isArray(data.followups) ? data.followups : undefined,
+    }
   },
 }
 

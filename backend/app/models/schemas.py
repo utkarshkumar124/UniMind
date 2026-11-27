@@ -1,6 +1,6 @@
 """Pydantic schemas and data transfer models for UniMind API."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -18,6 +18,26 @@ class HealthResponse(BaseModel):
     embedding_error: Optional[str] = Field(
         default=None,
         description="Embedding initialization failure details when embedding_status is FAILED",
+    )
+    llm_provider: str = Field(
+        default="extractive-fallback",
+        description="Active answer generation provider: gemini or extractive-fallback",
+    )
+    llm_model: Optional[str] = Field(
+        default=None,
+        description="Configured Gemini model identifier when Gemini API is enabled",
+    )
+    local_llm_available: bool = Field(
+        default=False,
+        description="Whether a local OpenAI-compatible LLM (e.g. LM Studio Gemma 4) is reachable",
+    )
+    local_llm_model: Optional[str] = Field(
+        default=None,
+        description="Configured local LLM identifier (e.g. google/gemma-4-e4b)",
+    )
+    default_llm_mode: str = Field(
+        default="auto",
+        description="Default answer generation routing policy: auto, gemini, local, or extractive",
     )
 
 
@@ -161,6 +181,14 @@ class QueryRequest(BaseModel):
     department: Optional[str] = Field(default=None, description="Optional department filter")
     category: Optional[str] = Field(default=None, description="Optional category filter")
     min_similarity: Optional[float] = Field(default=None, description="Minimum similarity threshold")
+    llm_provider: Optional[str] = Field(
+        default=None,
+        description="Optional LLM override: auto, gemini, local, or extractive",
+    )
+    history: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Optional recent conversation turns [{role, content}] for follow-up context",
+    )
 
 
 class SourceCitation(BaseModel):
@@ -182,3 +210,11 @@ class QueryResponse(BaseModel):
     sources: List[SourceCitation] = Field(default_factory=list, description="List of referenced source citations")
     total_sources: int = Field(default=0, description="Count of cited sources")
     latency_ms: float = Field(..., description="Total processing latency in milliseconds")
+    provider_used: Optional[str] = Field(
+        default=None,
+        description="Exact synthesis backend used for this answer",
+    )
+    followups: List[str] = Field(
+        default_factory=list,
+        description="Suggested context-aware follow-up questions excluding already asked turns",
+    )

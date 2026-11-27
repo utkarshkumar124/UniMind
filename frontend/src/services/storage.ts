@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   enterToSend: true,
   displayName: 'Guest Student',
   fontSize: 'normal',
+  llmMode: 'auto',
 }
 
 export function getConversations(): Conversation[] {
@@ -160,6 +161,8 @@ export function getUserSettings(): UserSettings {
       displayName: typeof parsed.displayName === 'string' ? parsed.displayName : 'Guest Student',
       fontSize:
         parsed.fontSize === 'compact' || parsed.fontSize === 'large' ? parsed.fontSize : 'normal',
+      llmMode:
+        parsed.llmMode === 'gemini' || parsed.llmMode === 'local' ? parsed.llmMode : 'auto',
     }
   } catch {
     return DEFAULT_SETTINGS

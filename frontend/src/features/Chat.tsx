@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import ReactMarkdown from 'react-markdown'
 import {
   ArrowUp,
   Square,
@@ -29,10 +28,12 @@ import {
   removeSavedAnswerByContent,
   isAnswerSaved,
   getUserSettings,
+  saveUserSettings,
   getConversations,
 } from '../services/storage'
 import SourcePanel from '../components/SourcePanel'
-import type { AuthUser, Message, Source } from '../services/types'
+import MarkdownAnswer from '../components/MarkdownAnswer'
+import type { AuthUser, LlmMode, Message, Source } from '../services/types'
 
 const FEEDBACK_REASONS = [
   'Incorrect information',
@@ -68,7 +69,6 @@ function AssistantMessage({
   }, [m.content])
 
   const hasSources = Boolean(m.sources && m.sources.length > 0)
-  const text = m.content.replace(/\[(\d+)\]/g, '[$1](#cite-$1)')
 
   const handleCopy = () => {
     navigator.clipboard?.writeText(m.content)
@@ -111,40 +111,12 @@ function AssistantMessage({
   return (
     <article className="group space-y-3.5 refero-enter">
       {/* Editorial Markdown Answer directly on canvas */}
-      <div className={`prose-um ${streaming ? 'cursor' : ''}`}>
-        <ReactMarkdown
-          urlTransform={(u) => u}
-          components={{
-            a: ({ href, children }) => {
-              const n = href?.startsWith('#cite-') ? Number(href.slice(6)) : 0
-              const s = m.sources?.find((x) => x.n === n)
-              return n ? (
-                <button
-                  type="button"
-                  disabled={!s}
-                  onClick={() => s && onOpenSource(s)}
-                  aria-label={`Source ${n}`}
-                  title={s ? `${s.docTitle}, p. ${s.page}` : `Citation ${n}`}
-                  className="inline-flex items-center justify-center text-[11px] font-semibold px-1.5 py-0.5 mx-0.5 rounded bg-accent-tint text-accent hover:bg-accent hover:text-accent-ink leading-none align-baseline transition-colors"
-                >
-                  {n}
-                </button>
-              ) : (
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-ink hover:opacity-80 underline underline-offset-2"
-                >
-                  {children}
-                </a>
-              )
-            },
-          }}
-        >
-          {text}
-        </ReactMarkdown>
-      </div>
+      <MarkdownAnswer
+        content={m.content}
+        sources={m.sources}
+        onOpenSource={onOpenSource}
+        className={`prose-um ${streaming ? 'cursor' : ''}`}
+      />
 
       {/* Sources Showcase Container (Refero card container style) & Action Bar */}
       {!streaming && m.content && (
@@ -258,6 +230,12 @@ function AssistantMessage({
               </span>
             )}
 
+            {m.providerUsed && m.providerUsed !== 'small-talk' && (
+              <span className="text-[11px] text-ink3 px-2 py-0.5 rounded-full border border-line/70 bg-surface/60">
+                {m.providerUsed}
+              </span>
+            )}
+
             {timeStr && (
               <span className="text-[11px] text-ink3 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
                 {timeStr}
@@ -344,6 +322,7 @@ export default function Chat() {
   const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null)
   const [src, setSrc] = useState<Source | null>(null)
   const [enterToSend, setEnterToSend] = useState(() => getUserSettings().enterToSend)
+  const [llmMode, setLlmMode] = useState<LlmMode>(() => getUserSettings().llmMode)
   const [departments, setDepartments] = useState<string[]>([])
   const [selectedDept, setSelectedDept] = useState<string | null>(null)
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => getStoredAuthUser())
@@ -358,7 +337,11 @@ export default function Chat() {
   const userScrolledUp = useRef(false)
 
   useEffect(() => {
-    const onSettings = () => setEnterToSend(getUserSettings().enterToSend)
+    const onSettings = () => {
+      const s = getUserSettings()
+      setEnterToSend(s.enterToSend)
+      setLlmMode(s.llmMode)
+    }
     const onAuth = () => setAuthUser(getStoredAuthUser())
     window.addEventListener('unimind:settings_updated', onSettings)
     window.addEventListener('unimind:auth_updated', onAuth)
@@ -464,6 +447,11 @@ export default function Chat() {
     let acc = ''
 
     try {
+      const historyPayload = base
+        .slice(0, -1)
+        .slice(-6)
+        .map((m) => ({ role: m.role, content: m.content.slice(0, 600) }))
+
       const r = await chatService.reply(
         prompt,
         (t) => {
@@ -471,7 +459,9 @@ export default function Chat() {
           setLive(acc)
         },
         controller.signal,
-        selectedDept || undefined
+        selectedDept || undefined,
+        llmMode,
+        historyPayload
       )
 
       const assistantMsg: Message = {
@@ -479,6 +469,8 @@ export default function Chat() {
         role: 'assistant',
         content: r.content,
         sources: r.sources,
+        providerUsed: r.providerUsed,
+        followups: r.followups,
         timestamp: Date.now(),
       }
 
@@ -560,11 +552,18 @@ export default function Chat() {
 
   const isEmptyHome = !loading && msgs.length === 0 && !busy
 
-  const FOLLOW_UP_PILLS = [
-    'Check attendance rules?',
-    'See exceptions and deadlines?',
-    'Compare assessment & exam weightage?',
-  ]
+  const askedQuestionsSet = new Set(
+    msgs
+      .filter((m) => m.role === 'user')
+      .map((m) => m.content.trim().toLowerCase().replace(/[?.!,]+$/, ''))
+  )
+  const lastAssistantWithFollowups = [...msgs]
+    .reverse()
+    .find((m) => m.role === 'assistant' && Array.isArray(m.followups) && m.followups.length > 0)
+
+  const dynamicFollowups = (lastAssistantWithFollowups?.followups || [])
+    .filter((qText) => !askedQuestionsSet.has(qText.trim().toLowerCase().replace(/[?.!,]+$/, '')))
+    .slice(0, 3)
 
   const floatingComposer = (centered: boolean) => (
     <div
@@ -576,10 +575,10 @@ export default function Chat() {
       style={!centered ? { paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' } : undefined}
     >
       <div className={`pointer-events-auto relative ${centered ? 'max-w-[640px]' : 'max-w-[640px] mx-auto space-y-2.5'}`}>
-        {/* Stacked Card-Deck Follow-up Pills (expands cleanly on hover) */}
-        {!centered && !busy && msgs.length > 0 && !input.trim() && (
+        {/* Stacked Card-Deck Follow-up Pills (dynamic & never repeats asked questions) */}
+        {!centered && !busy && msgs.length > 0 && !input.trim() && dynamicFollowups.length > 0 && (
           <div className="followup-deck">
-            {FOLLOW_UP_PILLS.map((fq, idx) => (
+            {dynamicFollowups.map((fq, idx) => (
               <button
                 key={fq}
                 type="button"
@@ -690,7 +689,20 @@ export default function Chat() {
             className="w-full resize-none bg-transparent outline-none py-1.5 placeholder:text-ink3 max-h-[140px] text-ink text-[15px] font-medium tracking-[-0.02em] leading-snug"
           />
 
-          <div className="shrink-0">
+          <div className="shrink-0 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                const order: LlmMode[] = ['auto', 'gemini', 'local']
+                const next = order[(order.indexOf(llmMode) + 1) % order.length]
+                setLlmMode(next)
+                saveUserSettings({ llmMode: next })
+              }}
+              title="Switch answer model: Auto (Gemma 4 -> Gemini 3) -> Gemini 3 -> Gemma 4"
+              className="ios-glass-chip hidden sm:inline-flex items-center px-2.5 h-8 rounded-full text-[11.5px] font-medium text-ink2 hover:text-ink transition-colors"
+            >
+              {llmMode === 'local' ? 'Gemma 4' : llmMode === 'gemini' ? 'Gemini 3' : 'Auto LLM'}
+            </button>
             {busy ? (
               <button
                 type="button"
@@ -833,7 +845,7 @@ export default function Chat() {
                   />
 
                   <div className="flex items-center justify-between gap-2 pt-3">
-                    <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                       <button
                         type="button"
                         onClick={() => navigate('/knowledge')}
@@ -847,15 +859,46 @@ export default function Chat() {
                       <button
                         type="button"
                         onClick={() => setSelectedDept(null)}
-                        className={`inline-flex items-center gap-1.5 text-[13px] px-3 h-8.5 rounded-full border shrink-0 transition-all duration-200 ${
+                        title="Grounded mode across official documents"
+                        className={`inline-flex items-center gap-1.5 text-[13px] px-2.5 sm:px-3 h-8.5 rounded-full border shrink-0 transition-all duration-200 ${
                           selectedDept === null
                             ? 'bg-raised border-ink3/60 text-ink font-medium'
                             : 'border-transparent text-ink2 hover:bg-raised/60 hover:text-ink'
                         }`}
                       >
-                        <Sparkles size={13} className="text-accent" />
-                        <span>Grounded mode</span>
+                        <Sparkles size={13} className="text-accent shrink-0" />
+                        <span className="hidden sm:inline whitespace-nowrap">Grounded mode</span>
                       </button>
+
+                      <div
+                        className="inline-flex items-center p-0.5 rounded-full border border-line bg-bg/70 shrink-0"
+                        role="group"
+                        aria-label="Answer LLM mode"
+                      >
+                        {(
+                          [
+                            { id: 'auto', label: 'Auto' },
+                            { id: 'gemini', label: 'Gemini 3' },
+                            { id: 'local', label: 'Gemma 4' },
+                          ] as const
+                        ).map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => {
+                              setLlmMode(opt.id)
+                              saveUserSettings({ llmMode: opt.id })
+                            }}
+                            className={`px-2 sm:px-2.5 h-7 rounded-full text-[11.5px] sm:text-[12px] font-medium whitespace-nowrap transition-colors ${
+                              llmMode === opt.id
+                                ? 'bg-pill text-pill-ink'
+                                : 'text-ink2 hover:text-ink'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
 
                     <button
@@ -863,7 +906,7 @@ export default function Chat() {
                       aria-label="Send question"
                       disabled={!input.trim()}
                       onClick={() => send()}
-                      className={`w-9 h-9 rounded-full grid place-items-center transition-all ml-auto ${
+                      className={`w-9 h-9 rounded-full grid place-items-center shrink-0 transition-all ml-auto ${
                         input.trim()
                           ? 'bg-pill text-pill-ink hover:opacity-90 shadow-xs'
                           : 'bg-raised border border-line text-ink3 !opacity-100 cursor-not-allowed'

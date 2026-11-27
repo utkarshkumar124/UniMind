@@ -24,6 +24,14 @@ class ChatMessageRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, description="Optional conversation UUID")
     department: Optional[str] = Field(default=None, description="Department filter")
     category: Optional[str] = Field(default=None, description="Category filter")
+    llm_provider: Optional[str] = Field(
+        default=None,
+        description="Optional LLM override: auto, gemini, local, or extractive",
+    )
+    history: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description="Recent conversation turns [{role, content}] for follow-up retrieval",
+    )
 
 
 class ChatReplyResponse(BaseModel):
@@ -31,6 +39,14 @@ class ChatReplyResponse(BaseModel):
 
     content: str = Field(..., description="Generated answer text")
     sources: List[Dict[str, Any]] = Field(default_factory=list, description="List of source references")
+    provider_used: Optional[str] = Field(
+        default=None,
+        description="Active synthesis backend used for this reply",
+    )
+    followups: List[str] = Field(
+        default_factory=list,
+        description="Context-aware follow-up questions for the next turn",
+    )
 
 
 def _ensure_embedding_service_available() -> None:
@@ -58,6 +74,8 @@ async def query_knowledge_base(request: QueryRequest) -> QueryResponse:
             department=request.department,
             category=request.category,
             min_similarity=request.min_similarity,
+            llm_provider=request.llm_provider,
+            history=request.history,
         )
         return response
     except HTTPException:
@@ -105,6 +123,8 @@ async def chat_message(request: ChatMessageRequest) -> ChatReplyResponse:
             top_k=4,
             department=request.department,
             category=request.category,
+            llm_provider=request.llm_provider,
+            history=request.history,
         )
 
         sources_payload = [
@@ -121,6 +141,8 @@ async def chat_message(request: ChatMessageRequest) -> ChatReplyResponse:
         return ChatReplyResponse(
             content=rag_res.answer,
             sources=sources_payload,
+            provider_used=rag_res.provider_used,
+            followups=rag_res.followups,
         )
     except HTTPException:
         raise
